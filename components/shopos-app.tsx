@@ -36,6 +36,7 @@ const nav = [
   { href: '/customers', label: 'Customers', permission: 'customers', icon: Users },
   { href: '/reports', label: 'Reports', permission: 'reports', icon: BarChart3 },
   { href: '/settings', label: 'Settings', permission: 'settings', icon: Settings },
+  { href: '/sync-log', label: 'Sync log', permission: 'settings', icon: RotateCcw },
 ]
 
 const products = [
