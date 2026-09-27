@@ -10,6 +10,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next({ request })
   }
   const response = NextResponse.next({ request })
+  if (process.env.SHOPOS_STORAGE === 'sqlite') return response
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://khmkububzbvosbbjyiyk.supabase.co'
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
