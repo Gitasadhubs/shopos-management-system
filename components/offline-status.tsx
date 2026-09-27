@@ -1,9 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { WifiOff, RefreshCw, Cloud, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { useOnlineStatus } from '@/hooks/use-online-status'
 import { useSyncEngine } from '@/hooks/use-sync-engine'
 
@@ -11,8 +10,11 @@ export function OfflineStatus() {
   const { isOnline } = useOnlineStatus()
   const { isSyncing, pendingCount, triggerSync } = useSyncEngine()
   const [open, setOpen] = useState(false)
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
   const label = !isOnline ? `Offline (${pendingCount})` : isSyncing ? `Syncing (${pendingCount})` : 'Synced'
   const tone = !isOnline ? 'border-rose-200 bg-rose-50 text-rose-700' : isSyncing ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+  if (!mounted) return <div className="relative"><span className="inline-flex h-9 w-24 rounded-full border border-emerald-200 bg-emerald-50" aria-hidden="true" /></div>
   return <>
     {!isOnline && <div className="border-b border-rose-200 bg-rose-50 px-4 py-2 text-center text-sm font-medium text-rose-800"><WifiOff className="mr-2 inline size-4" />You&apos;re offline. Sales will be saved and synced automatically.</div>}
     <div className="relative">
