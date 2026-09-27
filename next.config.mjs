@@ -1,3 +1,5 @@
+import withSerwist from "@serwist/next"
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   typescript: {
@@ -6,6 +8,12 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  turbopack: {},
 }
 
-export default nextConfig
+export default withSerwist({
+  swSrc: "app/sw.ts",
+  swDest: "public/sw.js",
+  disable: process.env.NODE_ENV === "development",
+  reloadOnOnline: true,
+})(nextConfig)
