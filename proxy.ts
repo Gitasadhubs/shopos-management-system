@@ -10,7 +10,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next({ request })
   }
   const response = NextResponse.next({ request })
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://khmkububzbvosbbjyiyk.supabase.co'
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
   // Keep the preview reachable when deployment variables have not been configured yet.
