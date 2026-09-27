@@ -1,7 +1,13 @@
 export type Role = 'owner' | 'manager' | 'cashier'
-export const permissions = {
-  owner: { dashboard: true, pos: true, inventory: true, purchases: true, customers: true, suppliers: true, reports: true, settings: true, users: true },
-  manager: { dashboard: true, pos: true, inventory: true, purchases: true, customers: true, suppliers: true, reports: true, settings: true, users: false },
-  cashier: { dashboard: true, pos: true, inventory: false, purchases: false, customers: true, suppliers: false, reports: false, settings: false, users: false },
+export const PERMISSIONS = {
+  owner: ['*'],
+  manager: ['dashboard.view', 'pos.*', 'inventory.*', 'customers.*', 'suppliers.*', 'purchases.*', 'reports.view', 'settings.view'],
+  cashier: ['dashboard.view', 'pos.*', 'customers.view'],
 } as const
-export function can(role: Role | null | undefined, permission: keyof typeof permissions.owner) { return !!role && permissions[role][permission] }
+export type Permission = 'dashboard' | 'pos' | 'inventory' | 'purchases' | 'customers' | 'suppliers' | 'reports' | 'settings' | 'users'
+export function can(role: Role | null | undefined, permission: Permission) {
+  if (!role) return false
+  if (role === 'owner') return true
+  if (role === 'cashier') return ['dashboard', 'pos', 'customers'].includes(permission)
+  return true
+}

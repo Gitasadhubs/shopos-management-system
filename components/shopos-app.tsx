@@ -25,15 +25,17 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
 import { Bar, BarChart, CartesianGrid, XAxis } from 'recharts'
+import { useAuth } from '@/components/auth/auth-provider'
+import { can } from '@/lib/permissions'
 
 const nav = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/pos', label: 'POS', icon: ShoppingCart },
-  { href: '/inventory', label: 'Inventory', icon: Boxes },
-  { href: '/purchases', label: 'Purchases', icon: Truck },
-  { href: '/customers', label: 'Customers', icon: Users },
-  { href: '/reports', label: 'Reports', icon: BarChart3 },
-  { href: '/settings', label: 'Settings', icon: Settings },
+  { href: '/dashboard', label: 'Dashboard', permission: 'dashboard', icon: LayoutDashboard },
+  { href: '/pos', label: 'POS', permission: 'pos', icon: ShoppingCart },
+  { href: '/inventory', label: 'Inventory', permission: 'inventory', icon: Boxes },
+  { href: '/purchases', label: 'Purchases', permission: 'purchases', icon: Truck },
+  { href: '/customers', label: 'Customers', permission: 'customers', icon: Users },
+  { href: '/reports', label: 'Reports', permission: 'reports', icon: BarChart3 },
+  { href: '/settings', label: 'Settings', permission: 'settings', icon: Settings },
 ]
 
 const products = [
@@ -58,9 +60,11 @@ const fmt = (n: number) => `₨ ${n.toLocaleString('en-PK')}`
 
 function AppSidebar({ open, onClose }: { open?: boolean; onClose?: () => void }) {
   const pathname = usePathname()
+  const { role } = useAuth()
+  const visibleNav = nav.filter((item) => can(role?.role, item.permission as 'dashboard' | 'pos' | 'inventory' | 'purchases' | 'customers' | 'suppliers' | 'reports' | 'settings'))
   return <aside className={`${open ? 'fixed inset-y-0 left-0 z-50 flex' : 'hidden'} w-64 shrink-0 flex-col border-r bg-white lg:flex shadow-sm`}>
     <div className="flex h-20 items-center gap-3 border-b px-6"><div className="flex size-10 items-center justify-center rounded-xl bg-emerald-600 text-white"><Store /></div><div><div className="text-lg font-bold tracking-tight">Shop<span className="text-emerald-600">OS</span></div><div className="text-[11px] text-muted-foreground">Smart shop management</div></div><button onClick={onClose} className="ml-auto lg:hidden"><X /></button></div>
-    <div className="flex-1 px-3 py-5"><p className="px-3 pb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Workspace</p><nav className="flex flex-col gap-1">{nav.map(({ href, label, icon: Icon }) => <Link key={href} href={href} onClick={onClose} className={`flex min-h-11 items-center gap-3 rounded-xl px-4 text-base font-medium transition-all hover:scale-[1.01] ${pathname === href ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Icon className="size-[19px]" />{label}{label === 'POS' && <span className="ml-auto rounded bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold text-white">F2</span>}</Link>)}</nav></div>
+    <div className="flex-1 px-3 py-5"><p className="px-3 pb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Workspace</p><nav className="flex flex-col gap-1">{visibleNav.map(({ href, label, icon: Icon }) => <Link key={href} href={href} onClick={onClose} className={`flex min-h-11 items-center gap-3 rounded-xl px-4 text-base font-medium transition-all hover:scale-[1.01] ${pathname === href ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'}`}><Icon className="size-[19px]" />{label}{label === 'POS' && <span className="ml-auto rounded bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold text-white">F2</span>}</Link>)}</nav></div>
     <div className="m-3 rounded-xl bg-slate-50 p-4"><div className="mb-3 flex items-center justify-between"><span className="text-xs font-medium text-slate-600">Store status</span><span className="flex items-center gap-1.5 text-xs font-semibold text-emerald-600"><span className="size-2 rounded-full bg-emerald-500" />Online</span></div><p className="text-xs text-muted-foreground">Last synced just now</p><Separator className="my-3" /><div className="flex items-center gap-2"><div className="flex size-8 items-center justify-center rounded-full bg-emerald-100 text-xs font-bold text-emerald-700">AK</div><div><p className="text-xs font-semibold">Ahmed Khan</p><p className="text-[11px] text-muted-foreground">Owner</p></div><ChevronDown className="ml-auto size-4 text-muted-foreground" /></div></div>
   </aside>
 }
