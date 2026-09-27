@@ -10,9 +10,18 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next({ request })
   }
   const response = NextResponse.next({ request })
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+  // Keep the preview reachable when deployment variables have not been configured yet.
+  // Auth-protected routes will continue through the normal client-side setup flow instead of crashing the proxy.
+  if (!supabaseUrl || !supabaseKey || supabaseKey === 'PASTE_ANON_KEY_HERE') {
+    return response
+  }
+
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    supabaseUrl,
+    supabaseKey,
     { cookies: { getAll: () => request.cookies.getAll(), setAll: (cookies) => cookies.forEach(({ name, value, options }) => { request.cookies.set(name, value); response.cookies.set(name, value, options) }) } },
   )
   const { data: { user } } = await supabase.auth.getUser()
