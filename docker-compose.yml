@@ -1,0 +1,40 @@
+services:
+  shopos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: shopos:local
+    container_name: shopos
+    restart: unless-stopped
+    expose:
+      - "3000"
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      NODE_ENV: production
+      SHOPOS_STORAGE: sqlite
+      PORT: 3000
+    volumes:
+      - shopos-data:/app/.data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: shopos-nginx
+    restart: unless-stopped
+    depends_on:
+      shopos:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+
+volumes:
+  shopos-data:
