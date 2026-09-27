@@ -13,6 +13,13 @@ export async function proxy(request: NextRequest) {
   )
   const { data: { user } } = await supabase.auth.getUser()
   const path = request.nextUrl.pathname
+  const isAdminPath = path === '/admin' || path.startsWith('/admin/')
+  if (isAdminPath) {
+    if (!user) return NextResponse.rewrite(new URL('/404', request.url))
+    const { data: admin } = await supabase.from('platform_admins').select('id').eq('user_id', user.id).maybeSingle()
+    if (!admin) return NextResponse.rewrite(new URL('/404', request.url))
+    return response
+  }
   const isProtected = protectedPaths.some((item) => path === item || path.startsWith(`${item}/`))
   if (isProtected && !user) {
     const url = request.nextUrl.clone(); url.pathname = '/login'; url.searchParams.set('next', path); return NextResponse.redirect(url)
