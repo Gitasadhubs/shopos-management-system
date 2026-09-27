@@ -1,0 +1,32 @@
+services:
+  shopos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: shopos:local
+    container_name: shopos
+    restart: unless-stopped
+    expose:
+      - "3000"
+    env_file:
+      - .env.local
+    environment:
+      NODE_ENV: production
+      SHOPOS_STORAGE: sqlite
+      PORT: 3000
+    volumes:
+      - shopos-data:/app/.data
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: shopos-nginx
+    restart: unless-stopped
+    depends_on:
+      - shopos
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+
+volumes:
+  shopos-data:

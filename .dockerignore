@@ -1,0 +1,10 @@
+node_modules
+.next
+.git
+.vercel
+.v0-trash
+.data
+.env*
+*.log
+.DS_Store
+README.md
