@@ -26,15 +26,8 @@ export default function OfflinePage() {
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-primary">ShopOS</p>
           <h1 className="text-4xl font-bold tracking-tight text-foreground">You&apos;re offline</h1>
           <p className="text-base leading-7 text-muted-foreground">
-            Your sales are still being saved locally. Everything will sync when you&apos;re back online.
+            ShopOS needs a connection to reach the server database. Unsaved changes are not queued while offline.
           </p>
-        </div>
-        <div className="flex w-full flex-col gap-3 rounded-2xl border border-border bg-card p-5 text-left shadow-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-foreground">Pending sync</span>
-            <span className="rounded-full bg-muted px-3 py-1 text-sm font-semibold text-muted-foreground">0 items</span>
-          </div>
-          <p className="text-sm text-muted-foreground">Pending sales will appear here once offline storage is connected.</p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:flex-row">
           <Link className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90" href="/pos">

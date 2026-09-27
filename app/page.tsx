@@ -5,7 +5,7 @@ import { SyncProvider } from '@/hooks/use-sync-engine'
 export default function Page() {
   return (
     <AuthProvider>
-      <SyncProvider>
+      <SyncProvider enabled={process.env.SHOPOS_STORAGE !== 'sqlite'}>
         <ShopOSApp />
       </SyncProvider>
     </AuthProvider>

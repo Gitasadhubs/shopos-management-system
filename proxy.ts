@@ -5,20 +5,23 @@ const protectedPaths = ['/dashboard', '/pos', '/inventory', '/customers', '/supp
 const authPaths = ['/login', '/signup', '/forgot-password', '/reset-password']
 
 export async function proxy(request: NextRequest) {
+  const path = request.nextUrl.pathname
+  const response = NextResponse.next({ request })
+  const isAdminPath = path === '/admin' || path.startsWith('/admin/')
+  if (process.env.SHOPOS_STORAGE === 'sqlite') {
+    if (isAdminPath) return NextResponse.rewrite(new URL('/404', request.url))
+    if (authPaths.includes(path) || path === '/setup' || path === '/billing') return NextResponse.redirect(new URL('/dashboard', request.url))
+    return response
+  }
   // RSC navigations must pass through untouched so the client can hydrate and attach handlers.
   if (request.headers.get('RSC') === '1' || request.headers.has('Next-Router-State-Tree')) {
     return NextResponse.next({ request })
   }
-  const response = NextResponse.next({ request })
-  if (process.env.SHOPOS_STORAGE === 'sqlite') return response
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? 'https://khmkububzbvosbbjyiyk.supabase.co'
   const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
   // Keep the preview reachable when deployment variables have not been configured yet.
-  // Auth-protected routes will continue through the normal client-side setup flow instead of crashing the proxy.
-  if (!supabaseUrl || !supabaseKey || supabaseKey === 'PASTE_ANON_KEY_HERE') {
-    return response
-  }
+  if (!supabaseUrl || !supabaseKey || supabaseKey === 'PASTE_ANON_KEY_HERE') return response
 
   const supabase = createServerClient(
     supabaseUrl,
@@ -26,8 +29,6 @@ export async function proxy(request: NextRequest) {
     { cookies: { getAll: () => request.cookies.getAll(), setAll: (cookies) => cookies.forEach(({ name, value, options }) => { request.cookies.set(name, value); response.cookies.set(name, value, options) }) } },
   )
   const { data: { user } } = await supabase.auth.getUser()
-  const path = request.nextUrl.pathname
-  const isAdminPath = path === '/admin' || path.startsWith('/admin/')
   if (isAdminPath) {
     if (!user) return NextResponse.rewrite(new URL('/404', request.url))
     const { data: admin } = await supabase.from('platform_admins').select('id').eq('user_id', user.id).maybeSingle()
