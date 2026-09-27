@@ -1,6 +1,6 @@
-'use client'
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { Store, Check } from 'lucide-react'
-import { createClient } from '@/lib/supabase/client'
-export default function Setup() { const router=useRouter();const [name,setName]=useState('');const [saving,setSaving]=useState(false);const submit=async(e:React.FormEvent)=>{e.preventDefault();setSaving(true);const supabase=createClient();const {data:{user}}=await supabase.auth.getUser();if(user){const {data:role}=await supabase.from('user_roles').select('shop_id').eq('user_id',user.id).maybeSingle();if(role)await supabase.from('shop_settings').upsert({shop_id:role.shop_id,name:name||'My Shop'});else{const shopId=crypto.randomUUID();await supabase.from('user_roles').insert({user_id:user.id,shop_id:shopId,role:'owner',full_name:user.user_metadata?.full_name});await supabase.from('shop_settings').insert({shop_id:shopId,name:name||'My Shop'})}}router.push('/dashboard');setSaving(false)};return <main className="flex min-h-screen items-center justify-center bg-[#fbfaf7] px-4"><section className="w-full max-w-lg rounded-3xl border border-stone-200/80 bg-white p-8 shadow-xl shadow-stone-900/5"><div className="mb-6 flex size-12 items-center justify-center rounded-2xl bg-emerald-600 text-white"><Store/></div><p className="text-sm font-semibold text-emerald-700">One quick step</p><h1 className="mt-2 text-3xl font-bold text-stone-900">Let’s set up your shop</h1><p className="mt-2 text-stone-500">Tell us your shop name and we’ll take care of the rest.</p><form onSubmit={submit} className="mt-8 flex flex-col gap-4"><input autoFocus value={name} onChange={e=>setName(e.target.value)} placeholder="Your shop name" className="h-13 rounded-xl border border-stone-200 bg-stone-50 px-4 outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10" required/><button disabled={saving} className="flex h-12 items-center justify-center gap-2 rounded-full bg-emerald-600 font-semibold text-white hover:bg-emerald-700">{saving?'Saving…':<><Check className="size-4"/>Finish setup</>}</button></form></section></main> }
+import { Suspense } from 'react'
+import SetupForm from './setup-form'
+
+export default function Setup() {
+  return <Suspense fallback={null}><SetupForm /></Suspense>
+}
