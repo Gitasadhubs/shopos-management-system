@@ -1,7 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-const protectedPaths = ['/dashboard', '/pos', '/inventory', '/customers', '/suppliers', '/purchases', '/reports', '/settings', '/setup']
+const protectedPaths = ['/dashboard', '/pos', '/inventory', '/customers', '/suppliers', '/purchases', '/reports', '/settings', '/setup', '/billing']
 const authPaths = ['/login', '/signup', '/forgot-password', '/reset-password']
 
 export async function proxy(request: NextRequest) {
@@ -20,10 +20,13 @@ export async function proxy(request: NextRequest) {
   if (authPaths.includes(path) && user) return NextResponse.redirect(new URL('/dashboard', request.url))
   if (user && isProtected) {
     const { data: role } = await supabase.from('user_roles').select('shop_id, role').eq('user_id', user.id).maybeSingle()
-    const { data: shop } = role ? await supabase.from('shop_settings').select('shop_id, setup_completed').eq('shop_id', role.shop_id).maybeSingle() : { data: null }
+    const { data: shop } = role ? await supabase.from('shop_settings').select('shop_id, setup_completed, subscription_status').eq('shop_id', role.shop_id).maybeSingle() : { data: null }
     if (!role || !shop) return path === '/setup' ? response : NextResponse.redirect(new URL('/setup', request.url))
     if (!shop.setup_completed && path !== '/setup') return NextResponse.redirect(new URL('/setup', request.url))
     if (shop.setup_completed && path === '/setup') return NextResponse.redirect(new URL('/dashboard', request.url))
+    const isDemo = user.email?.toLowerCase() === 'demo@shopos.app'
+    const billingAllowed = path === '/billing' || path === '/settings/profile'
+    if (!isDemo && shop.subscription_status === 'expired' && !billingAllowed) return NextResponse.redirect(new URL('/billing', request.url))
     const cashierAllowed = ['/dashboard', '/pos', '/customers']
     if (role.role === 'cashier' && !cashierAllowed.some((allowed) => path === allowed || path.startsWith(`${allowed}/`))) return NextResponse.redirect(new URL('/dashboard', request.url))
     if (role.role === 'manager' && path.startsWith('/settings/users')) return NextResponse.redirect(new URL('/settings', request.url))
