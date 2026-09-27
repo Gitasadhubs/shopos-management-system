@@ -10,6 +10,7 @@ const eslintConfig = [
       "@typescript-eslint/no-explicit-any": "warn",
       "@typescript-eslint/no-unused-vars": "warn",
       "react-hooks/set-state-in-effect": "off",
+      "@typescript-eslint/no-this-alias": "off",
     },
   },
 ];
