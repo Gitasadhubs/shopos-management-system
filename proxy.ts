@@ -5,6 +5,10 @@ const protectedPaths = ['/dashboard', '/pos', '/inventory', '/customers', '/supp
 const authPaths = ['/login', '/signup', '/forgot-password', '/reset-password']
 
 export async function proxy(request: NextRequest) {
+  // RSC navigations must pass through untouched so the client can hydrate and attach handlers.
+  if (request.headers.get('RSC') === '1' || request.headers.has('Next-Router-State-Tree')) {
+    return NextResponse.next({ request })
+  }
   const response = NextResponse.next({ request })
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
