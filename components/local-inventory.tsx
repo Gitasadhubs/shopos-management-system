@@ -213,7 +213,7 @@ export default function LocalInventory() {
           <div className="sm:col-span-2">{field('name', 'Product name')}</div>{field('sku', 'SKU')}{field('barcode', 'Barcode')}{field('category', 'Category')}{field('unit', 'Unit')}
           {field('cost_price', 'Cost price', 'number', '0.01')}{field('sale_price', 'Sale price', 'number', '0.01')}{field('stock_quantity', 'Stock quantity', 'number', '0.01')}{field('reorder_level', 'Reorder level', 'number', '0.01')}
           {error && <p role="alert" className="text-sm text-rose-600 sm:col-span-2">{error}</p>}
-          <DialogFooter className="sm:col-span-2"><Button type="button" variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button><Button disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">{saving ? 'Saving…' : editingId ? 'Save changes' : 'Add product'}</Button></DialogFooter>
+          <DialogFooter className="sm:col-span-2"><Button type="button" variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button><Button type="submit" disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">{saving ? 'Saving…' : editingId ? 'Save changes' : 'Add product'}</Button></DialogFooter>
         </form>
       </DialogContent></Dialog>
 
@@ -224,7 +224,7 @@ export default function LocalInventory() {
           <div><Label htmlFor="stock-delta">Change in stock</Label><Input id="stock-delta" className="mt-1.5" type="number" step="0.01" value={stockDelta} onChange={(event) => setStockDelta(event.target.value)} placeholder="Use a negative number to remove stock" required /></div>
           <div><Label htmlFor="stock-reason">Reason</Label><Input id="stock-reason" className="mt-1.5" value={stockReason} onChange={(event) => setStockReason(event.target.value)} required maxLength={200} /></div>
           {error && <p role="alert" className="text-sm text-rose-600">{error}</p>}
-          <DialogFooter><Button type="button" variant="outline" onClick={() => setAdjusting(null)}>Cancel</Button><Button disabled={saving}>{saving ? 'Saving…' : 'Update stock'}</Button></DialogFooter>
+          <DialogFooter><Button type="button" variant="outline" onClick={() => setAdjusting(null)}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Update stock'}</Button></DialogFooter>
         </form>
       </DialogContent></Dialog>
 
