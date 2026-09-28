@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { ArrowUpRight, BarChart3, Boxes, CreditCard, LayoutDashboard, Menu, RotateCcw, Settings, ShoppingCart, Store, Truck, Users, WalletCards, X } from 'lucide-react'
+import { ArrowUpRight, BarChart3, Boxes, CreditCard, LayoutDashboard, Menu, RotateCcw, ShoppingCart, Store, WalletCards, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -17,13 +17,6 @@ const navigation: Array<{ href: string; label: string; permission: Permission; i
   { href: '/dashboard', label: 'Dashboard', permission: 'dashboard', icon: LayoutDashboard },
   { href: '/pos', label: 'POS', permission: 'pos', icon: ShoppingCart },
   { href: '/inventory', label: 'Inventory', permission: 'inventory', icon: Boxes },
-  { href: '/purchases', label: 'Purchases', permission: 'purchases', icon: Truck },
-  { href: '/customers', label: 'Customers', permission: 'customers', icon: Users },
-  { href: '/suppliers', label: 'Suppliers', permission: 'suppliers', icon: Truck },
-  { href: '/reports', label: 'Reports', permission: 'reports', icon: BarChart3 },
-  { href: '/settings', label: 'Settings', permission: 'settings', icon: Settings },
-  { href: '/billing', label: 'Billing', permission: 'settings', icon: CreditCard },
-  { href: '/sync-log', label: 'Sync log', permission: 'settings', icon: RotateCcw },
 ]
 
 type SaleRow = {
@@ -51,10 +44,7 @@ function AppSidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { role, user, loading } = useAuth()
   const name = role?.full_name || user?.email?.split('@')[0] || 'Local user'
   const initials = name.split(/\s+/).filter(Boolean).slice(0, 2).map((part: string) => part[0]).join('').toUpperCase()
-  const links = navigation
-    .filter((item) => item.href !== '/billing' || Boolean(role?.shop_id))
-    .filter((item) => item.href !== '/sync-log' || Boolean(role?.shop_id))
-    .filter((item) => can(role?.role, item.permission))
+  const links = navigation.filter((item) => can(role?.role, item.permission))
 
   return <aside className={`${open ? 'fixed inset-y-0 left-0 z-50 flex' : 'hidden'} w-64 shrink-0 flex-col border-r bg-white shadow-sm lg:fixed lg:flex`}>
     <div className="flex h-20 items-center gap-3 border-b px-6">
@@ -147,15 +137,10 @@ function Dashboard() {
   </>
 }
 
-function UnavailableSection({ title }: { title: string }) {
-  return <section className="mx-auto max-w-3xl py-10"><h2 className="text-2xl font-bold text-stone-900">{title}</h2><p className="mt-2 text-sm text-muted-foreground">This section does not have an active data workflow in this installation.</p><Link href="/dashboard" className="mt-5 inline-flex text-sm font-semibold text-emerald-700">Back to dashboard</Link></section>
-}
-
 export default function ShopOSApp() {
   const [menuOpen, setMenuOpen] = useState(false)
   const pathname = usePathname()
-  const titles: Record<string, string> = { '/customers': 'Customers', '/purchases': 'Purchases', '/suppliers': 'Suppliers', '/reports': 'Reports', '/settings': 'Settings', '/sync-log': 'Sync log' }
-  const page = pathname === '/inventory' ? <LocalInventory /> : titles[pathname] ? <UnavailableSection title={titles[pathname]} /> : <Dashboard />
+  const page = pathname === '/inventory' ? <LocalInventory /> : <Dashboard />
 
   return <div className="min-h-screen bg-stone-50 text-stone-900">
     <AppSidebar open={menuOpen} onClose={() => setMenuOpen(false)} />

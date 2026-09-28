@@ -1,6 +1,10 @@
 import Link from 'next/link'
 import { requireAdmin, formatDate, statusClass } from '@/lib/admin'
 
+function signupCutoff() {
+  return new Date(Date.now() - 7 * 86400000).toISOString()
+}
+
 export default async function AdminDashboard() {
   const { supabase } = await requireAdmin()
   const [{ count: shops }, { count: active }, { count: trialing }, { count: expired }, { data: mrr }, { count: signups }, { data: recent }] = await Promise.all([
@@ -9,7 +13,7 @@ export default async function AdminDashboard() {
     supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'trialing'),
     supabase.from('subscriptions').select('*', { count: 'exact', head: true }).eq('status', 'expired'),
     supabase.from('subscriptions').select('amount_pkr').eq('status', 'active'),
-    supabase.from('shop_settings').select('*', { count: 'exact', head: true }).gt('created_at', new Date(Date.now() - 7 * 86400000).toISOString()),
+    supabase.from('shop_settings').select('*', { count: 'exact', head: true }).gt('created_at', signupCutoff()),
     supabase.from('shop_settings').select('shop_id,name,created_at,subscription_status').order('created_at', { ascending: false }).limit(20),
   ])
   const totalMrr = (mrr ?? []).reduce((sum, row) => sum + Number(row.amount_pkr ?? 0), 0)
