@@ -1,18 +1,17 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { getSessionUser, hasPlatformAdmin } from '@/lib/local-auth'
+import { sessionCookieName } from '@/lib/local-session'
+import { can, type Permission } from '@/lib/permissions'
 
-const protectedPaths = ['/dashboard', '/pos', '/inventory', '/customers', '/suppliers', '/purchases', '/reports', '/settings', '/setup', '/billing']
+const protectedPaths = ['/dashboard', '/pos', '/inventory', '/customers', '/suppliers', '/purchases', '/reports', '/expenses', '/day-end', '/settings', '/setup', '/billing']
 const authPaths = ['/login', '/signup', '/forgot-password', '/reset-password']
 
 export async function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname
   const response = NextResponse.next({ request })
   const isAdminPath = path === '/admin' || path.startsWith('/admin/')
-  if (process.env.SHOPOS_STORAGE === 'sqlite') {
-    if (isAdminPath) return NextResponse.rewrite(new URL('/404', request.url))
-    if (authPaths.includes(path) || path === '/setup' || path === '/billing') return NextResponse.redirect(new URL('/dashboard', request.url))
-    return response
-  }
+  if (process.env.SHOPOS_STORAGE === 'mariadb') return selfHostedProxy(request, response)
   // RSC navigations must pass through untouched so the client can hydrate and attach handlers.
   if (request.headers.get('RSC') === '1' || request.headers.has('Next-Router-State-Tree')) {
     return NextResponse.next({ request })
@@ -53,6 +52,49 @@ export async function proxy(request: NextRequest) {
     if (role.role === 'cashier' && !cashierAllowed.some((allowed) => path === allowed || path.startsWith(`${allowed}/`))) return NextResponse.redirect(new URL('/dashboard', request.url))
     if (role.role === 'manager' && path.startsWith('/settings/users')) return NextResponse.redirect(new URL('/settings', request.url))
   }
+  return response
+}
+
+// Self-hosted mode: email + password accounts in MariaDB (lib/local-auth.ts). The first account
+// (/setup) is the platform admin; shops sign up at /signup.
+const publicPaths = ['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email', '/accept-invite', '/setup']
+const signedOutOnly = ['/login', '/signup', '/forgot-password', '/setup']
+const roleRoutes: Array<{ prefix: string; permission: Permission }> = [
+  { prefix: '/inventory', permission: 'inventory' },
+  { prefix: '/suppliers', permission: 'suppliers' },
+  { prefix: '/purchases', permission: 'purchases' },
+  { prefix: '/reports', permission: 'reports' },
+  { prefix: '/day-end', permission: 'reports' },
+  { prefix: '/expenses', permission: 'expenses' },
+  { prefix: '/settings/users', permission: 'users' },
+  { prefix: '/billing', permission: 'billing' },
+]
+
+async function selfHostedProxy(request: NextRequest, response: NextResponse) {
+  const path = request.nextUrl.pathname
+  const redirect = (to: string) => NextResponse.redirect(new URL(to, request.url))
+  const isAdminPath = path === '/admin' || path.startsWith('/admin/')
+
+  const user = await getSessionUser(request.cookies.get(sessionCookieName())?.value)
+  // The admin area does not exist for anyone else, signed in or not.
+  if (isAdminPath) return user?.role === 'admin' ? response : NextResponse.rewrite(new URL('/404', request.url))
+  if (!user) {
+    // A fresh install has no admin yet: everything leads to setup until one is created.
+    if (!(await hasPlatformAdmin())) return path === '/setup' ? response : redirect('/setup')
+    if (path === '/setup') return redirect('/login')
+    if (publicPaths.includes(path)) return response
+    const login = request.nextUrl.clone()
+    login.pathname = '/login'
+    login.search = ''
+    if (path !== '/' && path !== '/dashboard') login.searchParams.set('next', path)
+    return NextResponse.redirect(login)
+  }
+  const home = user.role === 'admin' ? '/admin' : '/dashboard'
+  if (signedOutOnly.includes(path)) return redirect(home)
+  // Platform admins have no shop; their workspace is the admin area.
+  if (user.role === 'admin') return redirect('/admin')
+  const rule = roleRoutes.find(({ prefix }) => path === prefix || path.startsWith(`${prefix}/`))
+  if (rule && !can(user.role, rule.permission)) return redirect('/dashboard')
   return response
 }
 

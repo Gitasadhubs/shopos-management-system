@@ -1,16 +1,19 @@
 import { NextResponse } from 'next/server'
+import { isSelfHosted, jsonResponse, parseBody, withShop } from '@/lib/local-session'
 import { z } from 'zod'
-import { createLocalSale, listLocalSales, LocalDataError } from '@/lib/local-db'
+import { createLocalSale, listLocalSales } from '@/lib/local-db'
 import { createClient } from '@/lib/supabase/server'
 
 export const runtime = 'nodejs'
 
 const localSaleSchema = z.object({
   client_id: z.string().trim().min(1).max(120).optional(),
-  items: z.array(z.object({ product_id: z.string().uuid(), quantity: z.coerce.number().finite().positive() })).min(1),
-  discount: z.coerce.number().finite().nonnegative().default(0),
-  payment_method: z.enum(['cash', 'card']).default('cash'),
-  amount_paid: z.coerce.number().finite().nonnegative().optional(),
+  customer_id: z.string().uuid('Invalid customer.').nullish(),
+  items: z.array(z.object({ product_id: z.string().uuid(), quantity: z.coerce.number().finite().positive().max(1_000_000) })).min(1).max(500),
+  discount: z.coerce.number().finite().nonnegative().max(1_000_000_000).default(0),
+  // credit: the unpaid part goes on the customer's khata.
+  payment_method: z.enum(['cash', 'card', 'credit']).default('cash'),
+  amount_paid: z.coerce.number().finite().nonnegative().max(1_000_000_000).optional(),
 }).superRefine((sale, context) => {
   const productIds = sale.items.map((item) => item.product_id)
   if (new Set(productIds).size !== productIds.length) context.addIssue({ code: 'custom', message: 'Each product can only appear once in a sale.', path: ['items'] })
@@ -35,13 +38,9 @@ const hostedSaleSchema = z.object({
 
 const json = (data: unknown, error: string | null = null, status = 200) => NextResponse.json({ data, error }, { status })
 
-export async function GET() {
-  if (process.env.SHOPOS_STORAGE === 'sqlite') {
-    try {
-      return json(listLocalSales())
-    } catch {
-      return json(null, 'Unable to load sales history.', 500)
-    }
+export async function GET(request: Request) {
+  if (isSelfHosted()) {
+    return withShop(request, 'pos', 'Unable to load sales history.', async ({ shop }) => jsonResponse(await listLocalSales(shop.id)))
   }
 
   try {
@@ -59,26 +58,18 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  if (isSelfHosted()) {
+    return withShop(request, 'pos', 'Unable to complete sale.', async ({ shop, user }) => {
+      const body = await parseBody(request, localSaleSchema)
+      if (body instanceof NextResponse) return body
+      return jsonResponse(await createLocalSale(shop.id, body.data, user.id), null, 201)
+    })
+  }
   let body: unknown
   try {
     body = await request.json()
   } catch {
     return json(null, 'Request body must be valid JSON.', 400)
-  }
-
-  if (process.env.SHOPOS_STORAGE === 'sqlite') {
-    const parsed = localSaleSchema.safeParse(body)
-    if (!parsed.success) return json(null, parsed.error.issues[0]?.message ?? 'Invalid sale details.', 400)
-    try {
-      return json(await createLocalSale(parsed.data), null, 201)
-    } catch (error) {
-      if (error instanceof LocalDataError) return json(null, error.message, error.status)
-      if (error instanceof Error && /unique constraint/i.test(error.message) && parsed.data.client_id) {
-        const existing = listLocalSales(100).find((sale) => sale.client_id === parsed.data.client_id)
-        if (existing) return json(existing)
-      }
-      return json(null, 'Unable to complete sale.', 500)
-    }
   }
 
   const parsed = hostedSaleSchema.safeParse(body)

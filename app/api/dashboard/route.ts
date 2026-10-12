@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { isSelfHosted, jsonResponse, withShop } from '@/lib/local-session'
 import { getLocalDashboardStats } from '@/lib/local-db'
 import { createClient } from '@/lib/supabase/server'
 
@@ -13,15 +14,12 @@ function startOfDay() {
   return date.toISOString()
 }
 
-export async function GET() {
-  const startAt = startOfDay()
-  if (process.env.SHOPOS_STORAGE === 'sqlite') {
-    try {
-      return json(getLocalDashboardStats(startAt))
-    } catch {
-      return json(null, 'Unable to load dashboard statistics.', 500)
-    }
+export async function GET(request: Request) {
+  // "Today" follows the shop's time zone (Settings), not the server's.
+  if (isSelfHosted()) {
+    return withShop(request, 'dashboard', 'Unable to load dashboard statistics.', async ({ shop }) => jsonResponse(await getLocalDashboardStats(shop.id, shop.timezone)))
   }
+  const startAt = startOfDay()
 
   try {
     const supabase = await createClient()

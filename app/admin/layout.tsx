@@ -1,14 +1,33 @@
 import Link from 'next/link'
-import { LayoutDashboard, Store, CreditCard, Wallet, LogOut } from 'lucide-react'
+import { LogOut, ShieldCheck } from 'lucide-react'
+import { requirePlatformAdmin } from '@/lib/admin'
 import { adminSignOut } from './actions'
+import { AdminNav } from './admin-nav'
 
-const links = [
-  { href: '/admin', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/admin/shops', label: 'Shops', icon: Store },
-  { href: '/admin/subscriptions', label: 'Subscriptions', icon: CreditCard },
-  { href: '/admin/payments', label: 'Payments', icon: Wallet },
-]
+export const dynamic = 'force-dynamic'
 
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  return <div className="min-h-screen bg-[#fbfaf7] text-stone-900"><aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-stone-200 bg-white p-6 md:block"><Link href="/admin" className="text-xl font-bold">Shop<span className="text-emerald-600">OS</span> <span className="text-stone-400">Admin</span></Link><nav className="mt-10 space-y-1">{links.map(({ href, label, icon: Icon }) => <Link key={href} href={href} className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-stone-600 hover:bg-emerald-50 hover:text-emerald-700"><Icon className="size-4" />{label}</Link>)}</nav><form action={adminSignOut} className="absolute bottom-6 left-6 right-6"><button className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium text-stone-500 hover:bg-stone-100"><LogOut className="size-4" />Sign out</button></form></aside><main className="min-h-screen md:pl-64"><div className="border-b border-stone-200 bg-white px-5 py-4 md:hidden"><Link href="/admin" className="font-bold">Shop<span className="text-emerald-600">OS</span> Admin</Link></div>{children}</main></div>
+export default async function AdminLayout({ children }: { children: React.ReactNode }) {
+  const admin = await requirePlatformAdmin()
+  return (
+    <div className="min-h-screen bg-[#fbfaf7] text-stone-900">
+      <aside className="fixed inset-y-0 left-0 hidden w-64 flex-col bg-stone-900 p-6 text-white md:flex">
+        <Link href="/admin" className="flex items-center gap-3">
+          <span className="flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 shadow-lg shadow-emerald-500/30"><ShieldCheck className="size-5" /></span>
+          <span><span className="block text-lg font-bold">Shop<span className="text-emerald-400">OS</span></span><span className="block text-[11px] uppercase tracking-wider text-stone-400">Admin</span></span>
+        </Link>
+        <AdminNav />
+        <div className="mt-auto rounded-xl bg-white/5 p-4">
+          <p className="text-xs text-stone-400">Signed in as</p>
+          <p className="mt-1 truncate text-sm font-semibold">{admin.full_name}</p>
+          <p className="truncate text-xs text-stone-400">{admin.email}</p>
+          <form action={adminSignOut} className="mt-3"><button className="flex w-full items-center gap-2 rounded-lg px-2 text-sm font-medium text-stone-300 hover:bg-white/10 hover:text-white"><LogOut className="size-4" />Sign out</button></form>
+        </div>
+      </aside>
+      <div className="bg-stone-900 text-white md:hidden">
+        <div className="flex items-center justify-between px-4 py-3"><Link href="/admin" className="font-bold">Shop<span className="text-emerald-400">OS</span> Admin</Link><form action={adminSignOut}><button aria-label="Sign out" className="flex items-center gap-2 text-sm text-stone-300"><LogOut className="size-4" /></button></form></div>
+        <AdminNav mobile />
+      </div>
+      <main className="min-h-screen md:pl-64">{children}</main>
+    </div>
+  )
 }

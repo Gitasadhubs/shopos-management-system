@@ -1,10 +1,9 @@
-import Database from 'better-sqlite3'
+import mysql, { type Pool, type PoolConnection, type ResultSetHeader, type RowDataPacket } from 'mysql2/promise'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
-import path from 'node:path'
+import { addDays, dayKey, dayRange, dayStart } from '@/lib/time'
 
-type SqliteDatabase = InstanceType<typeof Database>
-type ProductRow = Omit<LocalProduct, 'is_active'> & { is_active: number }
+// Self-hosted storage (SHOPOS_STORAGE=mariadb). Every shop's rows carry its shop_id and every query
+// filters on it. Money is DECIMAL in the database and rounded to two places here; timestamps are UTC.
 
 export type LocalProduct = {
   id: string
@@ -25,243 +24,780 @@ export type LocalProduct = {
 
 export type LocalProductInput = Omit<LocalProduct, 'id' | 'created_at' | 'updated_at' | 'image_url' | 'is_active'> & { image_url?: string | null }
 export type LocalSaleItem = { product_id: string; product_name: string; quantity: number; unit_price: number; cost_price: number; subtotal: number }
-export type LocalSale = { id: string; client_id: string | null; total: number; discount: number; payment_method: string; amount_paid: number; change_given: number; created_at: string; items: LocalSaleItem[] }
-export type LocalSaleInput = { items: Array<{ product_id: string; quantity: number }>; discount?: number; payment_method: 'cash' | 'card'; amount_paid?: number; client_id?: string }
+export type LocalSale = {
+  id: string
+  client_id: string | null
+  total: number
+  discount: number
+  payment_method: string
+  amount_paid: number
+  change_given: number
+  credit_amount: number
+  customer_id: string | null
+  customer_name: string | null
+  created_at: string
+  items: LocalSaleItem[]
+}
+export type PaymentMethod = 'cash' | 'card' | 'credit'
+export type LocalSaleInput = { items: Array<{ product_id: string; quantity: number }>; discount?: number; payment_method: PaymentMethod; amount_paid?: number; client_id?: string; customer_id?: string | null }
 
 export class LocalDataError extends Error {
-  constructor(message: string, readonly status: number) {
+  // code: machine-readable reason the UI can act on, e.g. 'unverified' to offer a new verification link.
+  constructor(message: string, readonly status: number, readonly code?: string) {
     super(message)
     this.name = 'LocalDataError'
   }
 }
 
-let database: SqliteDatabase | undefined
+export type Queryable = Pool | PoolConnection
 
-function ensureColumn(db: SqliteDatabase, table: string, column: string, definition: string) {
-  const columns = db.pragma(`table_info(${table})`) as Array<{ name: string }>
-  if (!columns.some((item) => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+const PRODUCT_COLUMNS = 'id, name, sku, barcode, category, unit, cost_price, sale_price, stock_quantity, reorder_level, image_url, is_active, created_at, updated_at'
+const SALE_COLUMNS = 'sales.id, sales.client_id, sales.total, sales.discount, sales.payment_method, sales.amount_paid, sales.change_given, sales.credit_amount, sales.customer_id, customers.name AS customer_name, sales.created_at'
+const SALE_FROM = 'sales LEFT JOIN customers ON customers.id = sales.customer_id'
+const TABLE_OPTIONS = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+export const TRIAL_DAYS = 14
+export const PLAN_PRICE_PKR = 1500
+
+// Append-only: each entry is one schema version. Never edit an entry that has shipped; add a new one.
+// DDL is not transactional in MariaDB, so later statements use IF [NOT] EXISTS where they can and a
+// half-applied version can be re-run.
+const migrations: string[][] = [
+  [
+    `CREATE TABLE IF NOT EXISTS products (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      name VARCHAR(160) NOT NULL,
+      sku VARCHAR(80) NULL,
+      barcode VARCHAR(80) NULL,
+      category VARCHAR(80) NULL,
+      unit VARCHAR(20) NOT NULL DEFAULT 'pcs',
+      cost_price DECIMAL(14,2) NOT NULL DEFAULT 0,
+      sale_price DECIMAL(14,2) NOT NULL DEFAULT 0,
+      stock_quantity DECIMAL(14,3) NOT NULL DEFAULT 0,
+      reorder_level DECIMAL(14,3) NOT NULL DEFAULT 0,
+      image_url VARCHAR(2048) NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at DATETIME(3) NOT NULL,
+      updated_at DATETIME(3) NOT NULL,
+      -- A barcode scan must resolve to one product, so active products cannot share a code.
+      active_sku VARCHAR(80) AS (IF(is_active = 1, sku, NULL)) PERSISTENT,
+      active_barcode VARCHAR(80) AS (IF(is_active = 1, barcode, NULL)) PERSISTENT,
+      UNIQUE KEY products_active_sku_uq (active_sku),
+      UNIQUE KEY products_active_barcode_uq (active_barcode),
+      KEY products_name_idx (name),
+      CONSTRAINT products_stock_nonnegative CHECK (stock_quantity >= 0)
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS sales (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      client_id VARCHAR(120) NULL,
+      total DECIMAL(14,2) NOT NULL,
+      discount DECIMAL(14,2) NOT NULL DEFAULT 0,
+      payment_method VARCHAR(10) NOT NULL,
+      amount_paid DECIMAL(14,2) NOT NULL,
+      change_given DECIMAL(14,2) NOT NULL DEFAULT 0,
+      created_at DATETIME(3) NOT NULL,
+      UNIQUE KEY sales_client_id_uq (client_id),
+      KEY sales_created_at_idx (created_at)
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS sale_items (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      sale_id CHAR(36) NOT NULL,
+      product_id CHAR(36) NOT NULL,
+      product_name VARCHAR(160) NOT NULL,
+      quantity DECIMAL(14,3) NOT NULL,
+      unit_price DECIMAL(14,2) NOT NULL,
+      cost_price DECIMAL(14,2) NOT NULL,
+      subtotal DECIMAL(14,2) NOT NULL,
+      KEY sale_items_sale_id_idx (sale_id),
+      CONSTRAINT sale_items_sale_fk FOREIGN KEY (sale_id) REFERENCES sales (id) ON DELETE CASCADE,
+      CONSTRAINT sale_items_product_fk FOREIGN KEY (product_id) REFERENCES products (id),
+      CONSTRAINT sale_items_quantity_positive CHECK (quantity > 0)
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS stock_moves (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      product_id CHAR(36) NOT NULL,
+      delta DECIMAL(14,3) NOT NULL,
+      reason VARCHAR(200) NOT NULL,
+      created_at DATETIME(3) NOT NULL,
+      KEY stock_moves_product_id_idx (product_id),
+      KEY stock_moves_created_at_idx (created_at),
+      CONSTRAINT stock_moves_product_fk FOREIGN KEY (product_id) REFERENCES products (id),
+      CONSTRAINT stock_moves_delta_nonzero CHECK (delta <> 0)
+    ) ${TABLE_OPTIONS}`,
+  ],
+  [
+    `CREATE TABLE IF NOT EXISTS users (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      email VARCHAR(254) NOT NULL,
+      full_name VARCHAR(120) NOT NULL,
+      password_hash VARCHAR(255) NOT NULL,
+      role VARCHAR(10) NOT NULL,
+      email_verified_at DATETIME(3) NULL,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      last_login_at DATETIME(3) NULL,
+      created_at DATETIME(3) NOT NULL,
+      updated_at DATETIME(3) NOT NULL,
+      UNIQUE KEY users_email_uq (email),
+      CONSTRAINT users_role_valid CHECK (role IN ('owner', 'manager', 'cashier'))
+    ) ${TABLE_OPTIONS}`,
+    // Only a SHA-256 of each session and email token is stored, so a database leak does not leak logins.
+    `CREATE TABLE IF NOT EXISTS sessions (
+      token_hash CHAR(64) NOT NULL PRIMARY KEY,
+      user_id CHAR(36) NOT NULL,
+      created_at DATETIME(3) NOT NULL,
+      last_seen_at DATETIME(3) NOT NULL,
+      expires_at DATETIME(3) NOT NULL,
+      user_agent VARCHAR(255) NULL,
+      ip VARCHAR(64) NULL,
+      KEY sessions_user_id_idx (user_id),
+      KEY sessions_expires_at_idx (expires_at),
+      CONSTRAINT sessions_user_fk FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS email_tokens (
+      token_hash CHAR(64) NOT NULL PRIMARY KEY,
+      purpose VARCHAR(10) NOT NULL,
+      email VARCHAR(254) NOT NULL,
+      user_id CHAR(36) NULL,
+      role VARCHAR(10) NULL,
+      full_name VARCHAR(120) NULL,
+      created_by CHAR(36) NULL,
+      created_at DATETIME(3) NOT NULL,
+      expires_at DATETIME(3) NOT NULL,
+      used_at DATETIME(3) NULL,
+      KEY email_tokens_email_idx (email, purpose),
+      CONSTRAINT email_tokens_user_fk FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
+      CONSTRAINT email_tokens_purpose_valid CHECK (purpose IN ('verify', 'reset', 'invite'))
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS auth_attempts (
+      id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      bucket VARCHAR(80) NOT NULL,
+      created_at DATETIME(3) NOT NULL,
+      KEY auth_attempts_bucket_idx (bucket, created_at)
+    ) ${TABLE_OPTIONS}`,
+  ],
+  [
+    // Many shops on one install. Platform admins (role 'admin') run the service and belong to no shop.
+    `CREATE TABLE IF NOT EXISTS shops (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      name VARCHAR(120) NOT NULL,
+      phone VARCHAR(40) NULL,
+      address VARCHAR(300) NULL,
+      receipt_footer VARCHAR(300) NULL,
+      timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Karachi',
+      created_at DATETIME(3) NOT NULL,
+      updated_at DATETIME(3) NOT NULL,
+      KEY shops_created_at_idx (created_at)
+    ) ${TABLE_OPTIONS}`,
+    // "Expired" is not stored: a trialing or active subscription whose period has ended is expired.
+    `CREATE TABLE IF NOT EXISTS subscriptions (
+      shop_id CHAR(36) NOT NULL PRIMARY KEY,
+      plan VARCHAR(20) NOT NULL DEFAULT 'basic',
+      status VARCHAR(12) NOT NULL,
+      price_pkr DECIMAL(14,2) NOT NULL,
+      current_period_end DATETIME(3) NOT NULL,
+      created_at DATETIME(3) NOT NULL,
+      updated_at DATETIME(3) NOT NULL,
+      KEY subscriptions_status_idx (status, current_period_end),
+      CONSTRAINT subscriptions_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      CONSTRAINT subscriptions_status_valid CHECK (status IN ('trialing', 'active', 'suspended'))
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS subscription_payments (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      amount DECIMAL(14,2) NOT NULL,
+      method VARCHAR(20) NOT NULL,
+      reference VARCHAR(120) NULL,
+      months INT NOT NULL,
+      period_end DATETIME(3) NOT NULL,
+      recorded_by CHAR(36) NULL,
+      created_at DATETIME(3) NOT NULL,
+      KEY subscription_payments_shop_idx (shop_id, created_at),
+      KEY subscription_payments_created_idx (created_at),
+      CONSTRAINT subscription_payments_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      CONSTRAINT subscription_payments_amount_positive CHECK (amount > 0),
+      CONSTRAINT subscription_payments_months_positive CHECK (months > 0)
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS subscription_events (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      event VARCHAR(30) NOT NULL,
+      detail VARCHAR(300) NULL,
+      actor_id CHAR(36) NULL,
+      created_at DATETIME(3) NOT NULL,
+      KEY subscription_events_shop_idx (shop_id, created_at),
+      CONSTRAINT subscription_events_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE
+    ) ${TABLE_OPTIONS}`,
+
+    // Data from a single-shop install becomes the first shop, on a trial.
+    `INSERT INTO shops (id, name, timezone, created_at, updated_at)
+     SELECT UUID(), 'My shop', 'Asia/Karachi', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3) FROM DUAL
+     WHERE NOT EXISTS (SELECT 1 FROM shops) AND (EXISTS (SELECT 1 FROM users) OR EXISTS (SELECT 1 FROM products) OR EXISTS (SELECT 1 FROM sales))`,
+    `INSERT INTO subscriptions (shop_id, plan, status, price_pkr, current_period_end, created_at, updated_at)
+     SELECT id, 'basic', 'trialing', ${PLAN_PRICE_PKR}, UTC_TIMESTAMP(3) + INTERVAL ${TRIAL_DAYS} DAY, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3)
+     FROM shops WHERE id NOT IN (SELECT shop_id FROM subscriptions)`,
+
+    `ALTER TABLE users ADD COLUMN IF NOT EXISTS shop_id CHAR(36) NULL AFTER id`,
+    `UPDATE users SET shop_id = (SELECT id FROM shops ORDER BY created_at LIMIT 1) WHERE shop_id IS NULL`,
+    `ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_valid`,
+    `ALTER TABLE users
+      ADD KEY IF NOT EXISTS users_shop_id_idx (shop_id),
+      ADD CONSTRAINT users_shop_fk FOREIGN KEY IF NOT EXISTS (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      ADD CONSTRAINT IF NOT EXISTS users_role_valid CHECK (role IN ('admin', 'owner', 'manager', 'cashier')),
+      ADD CONSTRAINT IF NOT EXISTS users_shop_matches_role CHECK ((role = 'admin') = (shop_id IS NULL))`,
+
+    `ALTER TABLE email_tokens ADD COLUMN IF NOT EXISTS shop_id CHAR(36) NULL AFTER purpose`,
+    `UPDATE email_tokens SET shop_id = (SELECT id FROM shops ORDER BY created_at LIMIT 1) WHERE purpose = 'invite' AND shop_id IS NULL`,
+    `ALTER TABLE email_tokens ADD CONSTRAINT email_tokens_shop_fk FOREIGN KEY IF NOT EXISTS (shop_id) REFERENCES shops (id) ON DELETE CASCADE`,
+
+    `ALTER TABLE products ADD COLUMN IF NOT EXISTS shop_id CHAR(36) NULL AFTER id`,
+    `UPDATE products SET shop_id = (SELECT id FROM shops ORDER BY created_at LIMIT 1) WHERE shop_id IS NULL`,
+    // Codes only need to be unique within a shop.
+    `ALTER TABLE products
+      MODIFY shop_id CHAR(36) NOT NULL,
+      DROP INDEX IF EXISTS products_active_sku_uq,
+      DROP INDEX IF EXISTS products_active_barcode_uq,
+      DROP INDEX IF EXISTS products_name_idx`,
+    `ALTER TABLE products
+      ADD UNIQUE KEY IF NOT EXISTS products_shop_sku_uq (shop_id, active_sku),
+      ADD UNIQUE KEY IF NOT EXISTS products_shop_barcode_uq (shop_id, active_barcode),
+      ADD KEY IF NOT EXISTS products_shop_name_idx (shop_id, name),
+      ADD CONSTRAINT products_shop_fk FOREIGN KEY IF NOT EXISTS (shop_id) REFERENCES shops (id) ON DELETE CASCADE`,
+
+    `CREATE TABLE IF NOT EXISTS customers (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      name VARCHAR(160) NOT NULL,
+      phone VARCHAR(40) NULL,
+      address VARCHAR(300) NULL,
+      notes VARCHAR(1000) NULL,
+      -- What the customer owes the shop (khata). Kept equal to the sum of their ledger rows.
+      balance DECIMAL(14,2) NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at DATETIME(3) NOT NULL,
+      updated_at DATETIME(3) NOT NULL,
+      KEY customers_shop_name_idx (shop_id, name),
+      CONSTRAINT customers_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS customer_ledger (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      customer_id CHAR(36) NOT NULL,
+      kind VARCHAR(12) NOT NULL,
+      amount DECIMAL(14,2) NOT NULL,
+      sale_id CHAR(36) NULL,
+      note VARCHAR(300) NULL,
+      created_by CHAR(36) NULL,
+      created_at DATETIME(3) NOT NULL,
+      KEY customer_ledger_customer_idx (customer_id, created_at),
+      KEY customer_ledger_shop_idx (shop_id, created_at),
+      CONSTRAINT customer_ledger_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      CONSTRAINT customer_ledger_customer_fk FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE,
+      CONSTRAINT customer_ledger_kind_valid CHECK (kind IN ('sale', 'payment', 'adjustment')),
+      CONSTRAINT customer_ledger_amount_nonzero CHECK (amount <> 0)
+    ) ${TABLE_OPTIONS}`,
+
+    `ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS shop_id CHAR(36) NULL AFTER id,
+      ADD COLUMN IF NOT EXISTS customer_id CHAR(36) NULL AFTER client_id,
+      ADD COLUMN IF NOT EXISTS credit_amount DECIMAL(14,2) NOT NULL DEFAULT 0 AFTER change_given,
+      ADD COLUMN IF NOT EXISTS created_by CHAR(36) NULL AFTER credit_amount`,
+    `UPDATE sales SET shop_id = (SELECT id FROM shops ORDER BY created_at LIMIT 1) WHERE shop_id IS NULL`,
+    // Idempotency keys come from the browser, so they are only unique within a shop.
+    `ALTER TABLE sales
+      MODIFY shop_id CHAR(36) NOT NULL,
+      DROP INDEX IF EXISTS sales_client_id_uq,
+      DROP INDEX IF EXISTS sales_created_at_idx`,
+    `ALTER TABLE sales
+      ADD UNIQUE KEY IF NOT EXISTS sales_shop_client_uq (shop_id, client_id),
+      ADD KEY IF NOT EXISTS sales_shop_created_idx (shop_id, created_at),
+      ADD KEY IF NOT EXISTS sales_customer_idx (customer_id),
+      ADD CONSTRAINT sales_shop_fk FOREIGN KEY IF NOT EXISTS (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      ADD CONSTRAINT sales_customer_fk FOREIGN KEY IF NOT EXISTS (customer_id) REFERENCES customers (id)`,
+    `ALTER TABLE customer_ledger ADD CONSTRAINT customer_ledger_sale_fk FOREIGN KEY IF NOT EXISTS (sale_id) REFERENCES sales (id) ON DELETE CASCADE`,
+
+    `ALTER TABLE stock_moves
+      ADD COLUMN IF NOT EXISTS shop_id CHAR(36) NULL AFTER id,
+      ADD COLUMN IF NOT EXISTS created_by CHAR(36) NULL AFTER reason`,
+    `UPDATE stock_moves SET shop_id = (SELECT id FROM shops ORDER BY created_at LIMIT 1) WHERE shop_id IS NULL`,
+    `ALTER TABLE stock_moves
+      MODIFY shop_id CHAR(36) NOT NULL,
+      ADD KEY IF NOT EXISTS stock_moves_shop_created_idx (shop_id, created_at),
+      ADD CONSTRAINT stock_moves_shop_fk FOREIGN KEY IF NOT EXISTS (shop_id) REFERENCES shops (id) ON DELETE CASCADE`,
+
+    `CREATE TABLE IF NOT EXISTS suppliers (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      name VARCHAR(160) NOT NULL,
+      phone VARCHAR(40) NULL,
+      address VARCHAR(300) NULL,
+      notes VARCHAR(1000) NULL,
+      -- What the shop owes the supplier. Kept equal to the sum of their ledger rows.
+      balance DECIMAL(14,2) NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at DATETIME(3) NOT NULL,
+      updated_at DATETIME(3) NOT NULL,
+      KEY suppliers_shop_name_idx (shop_id, name),
+      CONSTRAINT suppliers_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS purchases (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      supplier_id CHAR(36) NULL,
+      reference VARCHAR(80) NULL,
+      total DECIMAL(14,2) NOT NULL,
+      amount_paid DECIMAL(14,2) NOT NULL,
+      notes VARCHAR(1000) NULL,
+      created_by CHAR(36) NULL,
+      created_at DATETIME(3) NOT NULL,
+      KEY purchases_shop_created_idx (shop_id, created_at),
+      KEY purchases_supplier_idx (supplier_id),
+      CONSTRAINT purchases_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      CONSTRAINT purchases_supplier_fk FOREIGN KEY (supplier_id) REFERENCES suppliers (id),
+      CONSTRAINT purchases_paid_valid CHECK (amount_paid >= 0 AND amount_paid <= total)
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS purchase_items (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      purchase_id CHAR(36) NOT NULL,
+      product_id CHAR(36) NOT NULL,
+      product_name VARCHAR(160) NOT NULL,
+      quantity DECIMAL(14,3) NOT NULL,
+      unit_cost DECIMAL(14,2) NOT NULL,
+      subtotal DECIMAL(14,2) NOT NULL,
+      KEY purchase_items_purchase_idx (purchase_id),
+      CONSTRAINT purchase_items_purchase_fk FOREIGN KEY (purchase_id) REFERENCES purchases (id) ON DELETE CASCADE,
+      CONSTRAINT purchase_items_product_fk FOREIGN KEY (product_id) REFERENCES products (id),
+      CONSTRAINT purchase_items_quantity_positive CHECK (quantity > 0)
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS supplier_ledger (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      supplier_id CHAR(36) NOT NULL,
+      kind VARCHAR(12) NOT NULL,
+      amount DECIMAL(14,2) NOT NULL,
+      purchase_id CHAR(36) NULL,
+      note VARCHAR(300) NULL,
+      created_by CHAR(36) NULL,
+      created_at DATETIME(3) NOT NULL,
+      KEY supplier_ledger_supplier_idx (supplier_id, created_at),
+      CONSTRAINT supplier_ledger_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      CONSTRAINT supplier_ledger_supplier_fk FOREIGN KEY (supplier_id) REFERENCES suppliers (id) ON DELETE CASCADE,
+      CONSTRAINT supplier_ledger_purchase_fk FOREIGN KEY (purchase_id) REFERENCES purchases (id) ON DELETE CASCADE,
+      CONSTRAINT supplier_ledger_kind_valid CHECK (kind IN ('purchase', 'payment', 'adjustment')),
+      CONSTRAINT supplier_ledger_amount_nonzero CHECK (amount <> 0)
+    ) ${TABLE_OPTIONS}`,
+  ],
+  [
+    // Daily sales target and the automatic day-end report (email and WhatsApp).
+    `ALTER TABLE shops
+      ADD COLUMN IF NOT EXISTS daily_target DECIMAL(14,2) NULL,
+      ADD COLUMN IF NOT EXISTS report_enabled TINYINT(1) NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS report_time CHAR(5) NOT NULL DEFAULT '22:00',
+      ADD COLUMN IF NOT EXISTS report_email VARCHAR(254) NULL,
+      ADD COLUMN IF NOT EXISTS report_whatsapp VARCHAR(200) NULL,
+      ADD COLUMN IF NOT EXISTS report_last_sent_on DATE NULL`,
+    // Money spent running the shop (rent, bills, wages). spent_on is the shop's local calendar day.
+    `CREATE TABLE IF NOT EXISTS expenses (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      category VARCHAR(40) NOT NULL,
+      amount DECIMAL(14,2) NOT NULL,
+      note VARCHAR(300) NULL,
+      spent_on DATE NOT NULL,
+      created_by CHAR(36) NULL,
+      created_at DATETIME(3) NOT NULL,
+      KEY expenses_shop_day_idx (shop_id, spent_on),
+      CONSTRAINT expenses_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      CONSTRAINT expenses_amount_positive CHECK (amount > 0)
+    ) ${TABLE_OPTIONS}`,
+    // Every attempt to deliver a day-end report, so the owner can see what went out and what failed.
+    `CREATE TABLE IF NOT EXISTS report_deliveries (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      day DATE NOT NULL,
+      channel VARCHAR(10) NOT NULL,
+      recipient VARCHAR(254) NOT NULL,
+      status VARCHAR(10) NOT NULL,
+      error VARCHAR(500) NULL,
+      created_at DATETIME(3) NOT NULL,
+      KEY report_deliveries_shop_idx (shop_id, created_at),
+      CONSTRAINT report_deliveries_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE
+    ) ${TABLE_OPTIONS}`,
+  ],
+]
+
+// Survives Next dev hot reloads, which would otherwise open a new pool per edit.
+// shoposReadyFor: how many migrations shoposReady covered, so a hot reload that adds one migrates again.
+const store = globalThis as typeof globalThis & { shoposPool?: Pool; shoposReady?: Promise<void>; shoposReadyFor?: number }
+
+function createPool() {
+  return mysql.createPool({
+    host: process.env.SHOPOS_DB_HOST ?? '127.0.0.1',
+    port: Number(process.env.SHOPOS_DB_PORT ?? 3306),
+    database: process.env.SHOPOS_DB_NAME ?? 'shopos',
+    user: process.env.SHOPOS_DB_USER ?? 'shopos',
+    password: process.env.SHOPOS_DB_PASSWORD ?? '',
+    connectionLimit: Number(process.env.SHOPOS_DB_POOL_SIZE ?? 10),
+    charset: 'UTF8MB4_UNICODE_CI',
+    timezone: 'Z',
+    decimalNumbers: true,
+    enableKeepAlive: true,
+  })
 }
 
-function migrate(db: SqliteDatabase) {
-  const migrations: Array<() => void> = [
-    () => {
-      db.exec(`CREATE TABLE IF NOT EXISTS products (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        sku TEXT,
-        barcode TEXT,
-        category TEXT,
-        unit TEXT NOT NULL DEFAULT 'pcs',
-        cost_price REAL NOT NULL DEFAULT 0,
-        sale_price REAL NOT NULL DEFAULT 0,
-        stock_quantity REAL NOT NULL DEFAULT 0,
-        reorder_level REAL NOT NULL DEFAULT 0,
-        image_url TEXT,
-        is_active INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )`)
-      ensureColumn(db, 'products', 'sku', 'TEXT')
-      ensureColumn(db, 'products', 'barcode', 'TEXT')
-      ensureColumn(db, 'products', 'category', 'TEXT')
-      ensureColumn(db, 'products', 'unit', "TEXT NOT NULL DEFAULT 'pcs'")
-      ensureColumn(db, 'products', 'cost_price', 'REAL NOT NULL DEFAULT 0')
-      ensureColumn(db, 'products', 'sale_price', 'REAL NOT NULL DEFAULT 0')
-      ensureColumn(db, 'products', 'stock_quantity', 'REAL NOT NULL DEFAULT 0')
-      ensureColumn(db, 'products', 'reorder_level', 'REAL NOT NULL DEFAULT 0')
-      ensureColumn(db, 'products', 'image_url', 'TEXT')
-      ensureColumn(db, 'products', 'is_active', 'INTEGER NOT NULL DEFAULT 1')
-      ensureColumn(db, 'products', 'created_at', "TEXT NOT NULL DEFAULT ''")
-      ensureColumn(db, 'products', 'updated_at', "TEXT NOT NULL DEFAULT ''")
-      db.exec("UPDATE products SET created_at = CURRENT_TIMESTAMP WHERE created_at = '' OR created_at IS NULL; UPDATE products SET updated_at = CURRENT_TIMESTAMP WHERE updated_at = '' OR updated_at IS NULL;")
-    },
-    () => {
-      db.exec(`CREATE TABLE IF NOT EXISTS sales (
-        id TEXT PRIMARY KEY,
-        client_id TEXT UNIQUE,
-        total REAL NOT NULL,
-        discount REAL NOT NULL DEFAULT 0,
-        payment_method TEXT NOT NULL DEFAULT 'cash',
-        amount_paid REAL NOT NULL DEFAULT 0,
-        change_given REAL NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE TABLE IF NOT EXISTS sale_items (
-        id TEXT PRIMARY KEY,
-        sale_id TEXT NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
-        product_id TEXT NOT NULL REFERENCES products(id),
-        product_name TEXT NOT NULL,
-        quantity REAL NOT NULL CHECK (quantity > 0),
-        unit_price REAL NOT NULL,
-        cost_price REAL NOT NULL,
-        subtotal REAL NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS sales_created_at_idx ON sales(created_at);
-      CREATE INDEX IF NOT EXISTS sale_items_sale_id_idx ON sale_items(sale_id);
-      `)
-    },
-    () => {
-      db.exec(`CREATE TABLE IF NOT EXISTS stock_moves (
-        id TEXT PRIMARY KEY,
-        product_id TEXT NOT NULL REFERENCES products(id),
-        delta REAL NOT NULL CHECK (delta != 0),
-        reason TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE INDEX IF NOT EXISTS stock_moves_product_id_idx ON stock_moves(product_id);
-      CREATE INDEX IF NOT EXISTS stock_moves_created_at_idx ON stock_moves(created_at);
-      `)
-    },
-  ]
-
-  let version = Number(db.pragma('user_version', { simple: true }) ?? 0)
-  while (version < migrations.length) {
-    const nextVersion = version + 1
-    db.transaction(() => {
-      migrations[version]()
-      db.pragma(`user_version = ${nextVersion}`)
-    }).immediate()
-    version = nextVersion
+async function migrate(pool: Pool) {
+  const connection = await pool.getConnection()
+  try {
+    // Several app instances may start together; only one applies migrations.
+    const [[lock]] = await connection.query<RowDataPacket[]>("SELECT GET_LOCK('shopos_migrations', 60) AS acquired")
+    if (!lock?.acquired) throw new Error('Timed out waiting for the database migration lock.')
+    try {
+      await connection.query(`CREATE TABLE IF NOT EXISTS schema_migrations (version INT NOT NULL PRIMARY KEY, applied_at DATETIME(3) NOT NULL) ${TABLE_OPTIONS}`)
+      const [rows] = await connection.query<RowDataPacket[]>('SELECT version FROM schema_migrations')
+      const applied = new Set(rows.map((row) => Number(row.version)))
+      for (const [index, statements] of migrations.entries()) {
+        const version = index + 1
+        if (applied.has(version)) continue
+        for (const statement of statements) await connection.query(statement)
+        await connection.query('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)', [version, new Date()])
+      }
+    } finally {
+      await connection.query("SELECT RELEASE_LOCK('shopos_migrations')")
+    }
+  } finally {
+    connection.release()
   }
 }
 
-function getDatabase() {
-  if (database) return database
-  const dataDir = process.env.SHOPOS_DATA_DIR ?? path.join(process.cwd(), '.data')
-  mkdirSync(dataDir, { recursive: true })
-  database = new Database(path.join(dataDir, 'shopos.sqlite'))
-  database.pragma('journal_mode = WAL')
-  database.pragma('foreign_keys = ON')
-  migrate(database)
-  return database
+export async function getPool() {
+  store.shoposPool ??= createPool()
+  if (store.shoposReadyFor !== migrations.length) {
+    store.shoposReady = undefined
+    store.shoposReadyFor = migrations.length
+  }
+  store.shoposReady ??= migrate(store.shoposPool).catch((error) => {
+    store.shoposReady = undefined
+    throw error
+  })
+  await store.shoposReady
+  return store.shoposPool
 }
 
-function productFromRow(row: ProductRow): LocalProduct {
+export const isDbError = (error: unknown, errno: number): error is Error & { errno: number } =>
+  error instanceof Error && (error as { errno?: number }).errno === errno
+export const ER_DUP_ENTRY = 1062
+const ER_LOCK_DEADLOCK = 1213
+
+export async function withTransaction<T>(work: (connection: PoolConnection) => Promise<T>) {
+  const pool = await getPool()
+  for (let attempt = 1; ; attempt += 1) {
+    const connection = await pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const result = await work(connection)
+      await connection.commit()
+      return result
+    } catch (error) {
+      await connection.rollback().catch(() => undefined)
+      if (isDbError(error, ER_LOCK_DEADLOCK) && attempt < 3) continue
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+}
+
+export const roundMoney = (value: number) => Math.round(value * 100) / 100
+export const iso = (value: Date | string) => new Date(value).toISOString()
+export const likePattern = (query: string) => `%${query.replace(/[\\%_]/g, '\\$&')}%`
+
+export function productFromRow(row: RowDataPacket): LocalProduct {
   return {
-    ...row,
+    id: row.id,
+    name: row.name,
+    sku: row.sku,
+    barcode: row.barcode,
+    category: row.category,
+    unit: row.unit,
     cost_price: Number(row.cost_price),
     sale_price: Number(row.sale_price),
     stock_quantity: Number(row.stock_quantity),
     reorder_level: Number(row.reorder_level),
+    image_url: row.image_url,
     is_active: Boolean(row.is_active),
+    created_at: iso(row.created_at),
+    updated_at: iso(row.updated_at),
   }
 }
 
-function getProductRow(id: string) {
-  return getDatabase().prepare('SELECT * FROM products WHERE id = ? AND is_active = 1').get(id) as ProductRow | undefined
+async function getProduct(db: Queryable, shopId: string, id: string, lock = false) {
+  const [rows] = await db.query<RowDataPacket[]>(`SELECT ${PRODUCT_COLUMNS} FROM products WHERE shop_id = ? AND id = ? AND is_active = 1${lock ? ' FOR UPDATE' : ''}`, [shopId, id])
+  return rows[0] ? productFromRow(rows[0]) : null
 }
 
-export function listLocalProducts(search = '') {
+function productValues(input: LocalProductInput) {
+  return {
+    name: input.name,
+    sku: input.sku || null,
+    barcode: input.barcode || null,
+    category: input.category || null,
+    unit: input.unit || 'pcs',
+    cost_price: input.cost_price,
+    sale_price: input.sale_price,
+    stock_quantity: input.stock_quantity,
+    reorder_level: input.reorder_level,
+    image_url: input.image_url || null,
+  }
+}
+
+const duplicateCodeMessage = (label: string) => `${label} is already in use by another product.`
+
+async function assertUniqueCodes(db: Queryable, shopId: string, input: LocalProductInput, excludeId = '') {
+  const codes = [['sku', 'SKU', input.sku], ['barcode', 'Barcode', input.barcode]] as const
+  for (const [column, label, value] of codes) {
+    if (!value) continue
+    // The column collation is case-insensitive, so "abc" and "ABC" clash.
+    const [rows] = await db.query<RowDataPacket[]>(`SELECT 1 FROM products WHERE shop_id = ? AND is_active = 1 AND id <> ? AND ${column} = ? LIMIT 1`, [shopId, excludeId, value])
+    if (rows.length) throw new LocalDataError(duplicateCodeMessage(label), 409)
+  }
+}
+
+// Two requests can pass the check above at once; the unique keys catch the loser.
+function translateDuplicateCode(error: unknown): never {
+  if (isDbError(error, ER_DUP_ENTRY)) {
+    if (error.message.includes('products_shop_sku_uq')) throw new LocalDataError(duplicateCodeMessage('SKU'), 409)
+    if (error.message.includes('products_shop_barcode_uq')) throw new LocalDataError(duplicateCodeMessage('Barcode'), 409)
+  }
+  throw error
+}
+
+export async function listLocalProducts(shopId: string, search = '') {
   const query = search.trim()
-  const rows = getDatabase().prepare(`SELECT * FROM products WHERE is_active = 1 AND (
-    ? = '' OR instr(lower(name), lower(?)) > 0 OR instr(lower(COALESCE(sku, '')), lower(?)) > 0 OR instr(lower(COALESCE(barcode, '')), lower(?)) > 0
-  ) ORDER BY name`).all(query, query, query, query) as ProductRow[]
+  const like = likePattern(query)
+  const [rows] = await (await getPool()).query<RowDataPacket[]>(
+    `SELECT ${PRODUCT_COLUMNS} FROM products WHERE shop_id = ? AND is_active = 1 AND (? = '' OR name LIKE ? OR sku LIKE ? OR barcode LIKE ?) ORDER BY name`,
+    [shopId, query, like, like, like],
+  )
   return rows.map(productFromRow)
 }
 
-export function insertLocalProduct(input: LocalProductInput) {
-  const id = randomUUID()
-  getDatabase().prepare(`INSERT INTO products (id, name, sku, barcode, category, unit, cost_price, sale_price, stock_quantity, reorder_level, image_url)
-    VALUES (@id, @name, @sku, @barcode, @category, @unit, @cost_price, @sale_price, @stock_quantity, @reorder_level, @image_url)`)
-    .run({ id, ...input, sku: input.sku || null, barcode: input.barcode || null, category: input.category || null, unit: input.unit || 'pcs', image_url: input.image_url || null })
-  const row = getProductRow(id)
-  return row ? productFromRow(row) : null
-}
-
-export function updateLocalProduct(id: string, input: LocalProductInput) {
-  const result = getDatabase().prepare(`UPDATE products SET name = @name, sku = @sku, barcode = @barcode, category = @category,
-    unit = @unit, cost_price = @cost_price, sale_price = @sale_price, stock_quantity = @stock_quantity,
-    reorder_level = @reorder_level, image_url = @image_url, updated_at = @updated_at
-    WHERE id = @id AND is_active = 1`).run({ id, ...input, sku: input.sku || null, barcode: input.barcode || null, category: input.category || null, unit: input.unit || 'pcs', image_url: input.image_url || null, updated_at: new Date().toISOString() })
-  if (!result.changes) return null
-  const row = getProductRow(id)
-  return row ? productFromRow(row) : null
-}
-
-export function removeLocalProduct(id: string) {
-  return getDatabase().prepare('UPDATE products SET is_active = 0, updated_at = ? WHERE id = ? AND is_active = 1').run(new Date().toISOString(), id).changes > 0
-}
-
-export function adjustLocalStock(productId: string, delta: number, reason: string) {
-  const db = getDatabase()
-  return db.transaction(() => {
-    const product = getProductRow(productId)
-    if (!product) throw new LocalDataError('Product not found.', 404)
-    const stock = Number(product.stock_quantity) + delta
-    if (stock < 0) throw new LocalDataError('Stock cannot be reduced below zero.', 409)
-    db.prepare('UPDATE products SET stock_quantity = ?, updated_at = ? WHERE id = ?').run(stock, new Date().toISOString(), productId)
-    db.prepare('INSERT INTO stock_moves (id, product_id, delta, reason, created_at) VALUES (?, ?, ?, ?, ?)').run(randomUUID(), productId, delta, reason.trim(), new Date().toISOString())
-    return productFromRow(getProductRow(productId)!)
-  }).immediate()
-}
-
-function getSale(db: SqliteDatabase, saleId: string): LocalSale | null {
-  const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId) as Omit<LocalSale, 'items'> | undefined
-  if (!sale) return null
-  const items = db.prepare('SELECT product_id, product_name, quantity, unit_price, cost_price, subtotal FROM sale_items WHERE sale_id = ?').all(saleId) as LocalSaleItem[]
-  return { ...sale, items }
-}
-
-export function createLocalSale(input: LocalSaleInput) {
-  const db = getDatabase()
-  return db.transaction(() => {
-    if (input.client_id) {
-      const existing = db.prepare('SELECT id FROM sales WHERE client_id = ?').get(input.client_id) as { id: string } | undefined
-      if (existing) return getSale(db, existing.id)!
-    }
-
-    const products = input.items.map(({ product_id, quantity }) => {
-      const product = getProductRow(product_id)
-      if (!product) throw new LocalDataError('A product in this sale is no longer available.', 404)
-      if (quantity > Number(product.stock_quantity)) throw new LocalDataError(`Not enough stock for ${product.name}.`, 409)
-      return { product, quantity }
-    })
-    const subtotal = products.reduce((sum, item) => sum + Number(item.product.sale_price) * item.quantity, 0)
-    const discount = input.discount ?? 0
-    if (discount > subtotal) throw new LocalDataError('Discount cannot exceed the sale subtotal.', 400)
-    const total = subtotal - discount
-    const amountPaid = input.amount_paid ?? total
-    if (amountPaid < total) throw new LocalDataError('Amount paid must cover the sale total.', 400)
+export async function insertLocalProduct(shopId: string, input: LocalProductInput) {
+  return withTransaction(async (connection) => {
+    await assertUniqueCodes(connection, shopId, input)
     const id = randomUUID()
-    const createdAt = new Date().toISOString()
-    db.prepare(`INSERT INTO sales (id, client_id, total, discount, payment_method, amount_paid, change_given, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(id, input.client_id ?? null, total, discount, input.payment_method, amountPaid, amountPaid - total, createdAt)
-    const insertItem = db.prepare(`INSERT INTO sale_items (id, sale_id, product_id, product_name, quantity, unit_price, cost_price, subtotal)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    const updateStock = db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
-    for (const { product, quantity } of products) {
-      insertItem.run(randomUUID(), id, product.id, product.name, quantity, product.sale_price, product.cost_price, Number(product.sale_price) * quantity)
-      updateStock.run(quantity, createdAt, product.id)
-    }
-    return getSale(db, id)!
-  }).immediate()
+    const now = new Date()
+    const values = productValues(input)
+    await connection.query(
+      `INSERT INTO products (id, shop_id, name, sku, barcode, category, unit, cost_price, sale_price, stock_quantity, reorder_level, image_url, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, shopId, values.name, values.sku, values.barcode, values.category, values.unit, values.cost_price, values.sale_price, values.stock_quantity, values.reorder_level, values.image_url, now, now],
+    )
+    return getProduct(connection, shopId, id)
+  }).catch(translateDuplicateCode)
 }
 
-export function listLocalSales(limit = 20) {
-  const db = getDatabase()
-  const rows = db.prepare('SELECT id, client_id, total, discount, payment_method, amount_paid, change_given, created_at FROM sales ORDER BY created_at DESC LIMIT ?').all(limit) as Array<Omit<LocalSale, 'items'>>
-  return rows.map((sale) => ({ ...sale, items: (db.prepare('SELECT product_id, product_name, quantity, unit_price, cost_price, subtotal FROM sale_items WHERE sale_id = ?').all(sale.id) as LocalSaleItem[]) }))
+export async function updateLocalProduct(shopId: string, id: string, input: LocalProductInput) {
+  return withTransaction(async (connection) => {
+    if (!(await getProduct(connection, shopId, id, true))) return null
+    await assertUniqueCodes(connection, shopId, input, id)
+    const values = productValues(input)
+    await connection.query(
+      `UPDATE products SET name = ?, sku = ?, barcode = ?, category = ?, unit = ?, cost_price = ?, sale_price = ?,
+       stock_quantity = ?, reorder_level = ?, image_url = ?, updated_at = ? WHERE shop_id = ? AND id = ? AND is_active = 1`,
+      [values.name, values.sku, values.barcode, values.category, values.unit, values.cost_price, values.sale_price, values.stock_quantity, values.reorder_level, values.image_url, new Date(), shopId, id],
+    )
+    return getProduct(connection, shopId, id)
+  }).catch(translateDuplicateCode)
 }
 
-export function getLocalDashboardStats(startAt: string) {
-  const db = getDatabase()
-  const sales = Number((db.prepare('SELECT COALESCE(SUM(total), 0) AS total FROM sales WHERE datetime(created_at) >= datetime(?)').get(startAt) as { total: number }).total)
-  const profit = Number((db.prepare(`SELECT COALESCE(SUM((sale_items.unit_price - sale_items.cost_price) * sale_items.quantity), 0)
-    - COALESCE((SELECT SUM(discount) FROM sales WHERE datetime(created_at) >= datetime(?)), 0) AS total
-    FROM sale_items JOIN sales ON sales.id = sale_items.sale_id WHERE datetime(sales.created_at) >= datetime(?)`).get(startAt, startAt) as { total: number }).total)
-  const lowProducts = listLocalProducts().filter((product) => product.stock_quantity <= product.reorder_level)
-  const recentRows = db.prepare(`SELECT id, client_id, total, discount, payment_method, amount_paid, change_given, created_at FROM sales
-    WHERE datetime(created_at) >= datetime(?) ORDER BY created_at DESC LIMIT 10`).all(startAt) as Array<Omit<LocalSale, 'items'>>
+export async function removeLocalProduct(shopId: string, id: string) {
+  const [result] = await (await getPool()).query<ResultSetHeader>('UPDATE products SET is_active = 0, updated_at = ? WHERE shop_id = ? AND id = ? AND is_active = 1', [new Date(), shopId, id])
+  return result.affectedRows > 0
+}
+
+export async function adjustLocalStock(shopId: string, productId: string, delta: number, reason: string, actorId: string | null = null) {
+  return withTransaction(async (connection) => {
+    const product = await getProduct(connection, shopId, productId, true)
+    if (!product) throw new LocalDataError('Product not found.', 404)
+    if (product.stock_quantity + delta < 0) throw new LocalDataError('Stock cannot be reduced below zero.', 409)
+    const now = new Date()
+    await connection.query('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?', [delta, now, productId])
+    await connection.query('INSERT INTO stock_moves (id, shop_id, product_id, delta, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [randomUUID(), shopId, productId, delta, reason.trim(), actorId, now])
+    return (await getProduct(connection, shopId, productId))!
+  })
+}
+
+function saleFromRow(row: RowDataPacket, items: LocalSaleItem[]): LocalSale {
   return {
-    sales,
-    profit,
-    lowStock: lowProducts.length,
-    salesCount: Number((db.prepare('SELECT COUNT(*) AS count FROM sales WHERE datetime(created_at) >= datetime(?)').get(startAt) as { count: number }).count),
-    lowProducts,
-    recent: recentRows.map((sale) => ({ ...sale, items: (db.prepare('SELECT product_id, product_name, quantity, unit_price, cost_price, subtotal FROM sale_items WHERE sale_id = ?').all(sale.id) as LocalSaleItem[]) })),
+    id: row.id,
+    client_id: row.client_id,
+    total: Number(row.total),
+    discount: Number(row.discount),
+    payment_method: row.payment_method,
+    amount_paid: Number(row.amount_paid),
+    change_given: Number(row.change_given),
+    credit_amount: Number(row.credit_amount),
+    customer_id: row.customer_id,
+    customer_name: row.customer_name ?? null,
+    created_at: iso(row.created_at),
+    items,
   }
 }
 
-export function localDbHealth() {
-  return getDatabase().prepare('SELECT 1 AS ok').get()
+async function attachItems(db: Queryable, rows: RowDataPacket[]) {
+  if (!rows.length) return []
+  const [itemRows] = await db.query<RowDataPacket[]>(
+    'SELECT sale_id, product_id, product_name, quantity, unit_price, cost_price, subtotal FROM sale_items WHERE sale_id IN (?) ORDER BY product_name',
+    [rows.map((row) => row.id)],
+  )
+  const itemsBySale = new Map<string, LocalSaleItem[]>()
+  for (const item of itemRows) {
+    const list = itemsBySale.get(item.sale_id) ?? []
+    list.push({ product_id: item.product_id, product_name: item.product_name, quantity: Number(item.quantity), unit_price: Number(item.unit_price), cost_price: Number(item.cost_price), subtotal: Number(item.subtotal) })
+    itemsBySale.set(item.sale_id, list)
+  }
+  return rows.map((row) => saleFromRow(row, itemsBySale.get(row.id) ?? []))
+}
+
+async function findSale(db: Queryable, shopId: string, column: 'id' | 'client_id', value: string) {
+  const [rows] = await db.query<RowDataPacket[]>(`SELECT ${SALE_COLUMNS} FROM ${SALE_FROM} WHERE sales.shop_id = ? AND sales.${column} = ?`, [shopId, value])
+  return (await attachItems(db, rows))[0] ?? null
+}
+
+export async function createLocalSale(shopId: string, input: LocalSaleInput, actorId: string | null = null): Promise<LocalSale> {
+  try {
+    return await withTransaction(async (connection) => {
+      // A retried checkout (same client_id) returns the sale that was already recorded.
+      if (input.client_id) {
+        const existing = await findSale(connection, shopId, 'client_id', input.client_id)
+        if (existing) return existing
+      }
+
+      // Lock the products in a fixed order so concurrent sales cannot deadlock or oversell.
+      const [rows] = await connection.query<RowDataPacket[]>(
+        `SELECT ${PRODUCT_COLUMNS} FROM products WHERE shop_id = ? AND is_active = 1 AND id IN (?) ORDER BY id FOR UPDATE`,
+        [shopId, input.items.map((item) => item.product_id)],
+      )
+      const productsById = new Map(rows.map((row) => [row.id as string, productFromRow(row)]))
+      const lines = input.items.map(({ product_id, quantity }) => {
+        const product = productsById.get(product_id)
+        if (!product) throw new LocalDataError('A product in this sale is no longer available.', 404)
+        if (quantity > product.stock_quantity) throw new LocalDataError(`Not enough stock for ${product.name}.`, 409)
+        return { product, quantity, subtotal: roundMoney(product.sale_price * quantity) }
+      })
+
+      if (input.payment_method === 'credit' && !input.customer_id) throw new LocalDataError('Choose a customer for a credit (khata) sale.', 400)
+      if (input.customer_id) {
+        const [customer] = await connection.query<RowDataPacket[]>('SELECT id FROM customers WHERE shop_id = ? AND id = ? AND is_active = 1 FOR UPDATE', [shopId, input.customer_id])
+        if (!customer.length) throw new LocalDataError('Customer not found.', 404)
+      }
+
+      const subtotal = roundMoney(lines.reduce((sum, line) => sum + line.subtotal, 0))
+      const discount = roundMoney(input.discount ?? 0)
+      if (discount > subtotal) throw new LocalDataError('Discount cannot exceed the sale subtotal.', 400)
+      const total = roundMoney(subtotal - discount)
+      // A credit sale may be paid in part (or not at all); the rest goes on the customer's khata.
+      const credit = input.payment_method === 'credit'
+      const amountPaid = roundMoney(input.amount_paid ?? (credit ? 0 : total))
+      if (!credit && amountPaid < total) throw new LocalDataError('Amount paid must cover the sale total.', 400)
+      if (credit && amountPaid > total) throw new LocalDataError('For a credit sale, the amount paid cannot be more than the total.', 400)
+      const creditAmount = credit ? roundMoney(total - amountPaid) : 0
+
+      const id = randomUUID()
+      const createdAt = new Date()
+      await connection.query(
+        `INSERT INTO sales (id, shop_id, client_id, customer_id, total, discount, payment_method, amount_paid, change_given, credit_amount, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, shopId, input.client_id ?? null, input.customer_id ?? null, total, discount, input.payment_method, amountPaid, credit ? 0 : roundMoney(amountPaid - total), creditAmount, actorId, createdAt],
+      )
+      for (const { product, quantity, subtotal: lineSubtotal } of lines) {
+        await connection.query(
+          'INSERT INTO sale_items (id, sale_id, product_id, product_name, quantity, unit_price, cost_price, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [randomUUID(), id, product.id, product.name, quantity, product.sale_price, product.cost_price, lineSubtotal],
+        )
+        await connection.query('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?', [quantity, createdAt, product.id])
+      }
+      if (creditAmount > 0) {
+        await connection.query('UPDATE customers SET balance = balance + ?, updated_at = ? WHERE id = ?', [creditAmount, createdAt, input.customer_id])
+        await connection.query(
+          'INSERT INTO customer_ledger (id, shop_id, customer_id, kind, amount, sale_id, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [randomUUID(), shopId, input.customer_id, 'sale', creditAmount, id, `Sale ${id.slice(0, 8)}`, actorId, createdAt],
+        )
+      }
+      return (await findSale(connection, shopId, 'id', id))!
+    })
+  } catch (error) {
+    // Two requests with the same client_id raced; the first one won, so return its sale.
+    if (input.client_id && isDbError(error, ER_DUP_ENTRY) && error.message.includes('sales_shop_client_uq')) {
+      const existing = await findSale(await getPool(), shopId, 'client_id', input.client_id)
+      if (existing) return existing
+    }
+    throw error
+  }
+}
+
+export async function listLocalSales(shopId: string, limit = 20) {
+  const pool = await getPool()
+  const [rows] = await pool.query<RowDataPacket[]>(`SELECT ${SALE_COLUMNS} FROM ${SALE_FROM} WHERE sales.shop_id = ? ORDER BY sales.created_at DESC, sales.id LIMIT ?`, [shopId, limit])
+  return attachItems(pool, rows)
+}
+
+export async function getLocalDashboardStats(shopId: string, timezone: string) {
+  const pool = await getPool()
+  const today = dayKey(timezone)
+  const startAt = dayStart(timezone, today)
+  const weekKeys = dayRange(addDays(today, -6), today)
+  const weekStart = dayStart(timezone, weekKeys[0])
+
+  const [[totals]] = await pool.query<RowDataPacket[]>('SELECT COALESCE(SUM(total), 0) AS sales, COALESCE(SUM(discount), 0) AS discounts, COUNT(*) AS count FROM sales WHERE shop_id = ? AND created_at >= ?', [shopId, startAt])
+  const [[margin]] = await pool.query<RowDataPacket[]>(
+    `SELECT COALESCE(SUM((sale_items.unit_price - sale_items.cost_price) * sale_items.quantity), 0) AS margin
+     FROM sale_items JOIN sales ON sales.id = sale_items.sale_id WHERE sales.shop_id = ? AND sales.created_at >= ?`,
+    [shopId, startAt],
+  )
+  const [lowRows] = await pool.query<RowDataPacket[]>(`SELECT ${PRODUCT_COLUMNS} FROM products WHERE shop_id = ? AND is_active = 1 AND stock_quantity <= reorder_level ORDER BY name`, [shopId])
+  const [recentRows] = await pool.query<RowDataPacket[]>(`SELECT ${SALE_COLUMNS} FROM ${SALE_FROM} WHERE sales.shop_id = ? AND sales.created_at >= ? ORDER BY sales.created_at DESC, sales.id LIMIT 10`, [shopId, startAt])
+  const [weekRows] = await pool.query<RowDataPacket[]>('SELECT total, created_at FROM sales WHERE shop_id = ? AND created_at >= ?', [shopId, weekStart])
+  const [[credit]] = await pool.query<RowDataPacket[]>('SELECT COALESCE(SUM(balance), 0) AS owed, COUNT(*) AS customers FROM customers WHERE shop_id = ? AND is_active = 1 AND balance > 0', [shopId])
+  // Target, today's expenses and what a new shop has set up so far (the getting-started checklist).
+  const [[setup]] = await pool.query<RowDataPacket[]>(
+    `SELECT shops.daily_target, shops.phone, shops.address, shops.report_enabled,
+       (SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE shop_id = shops.id AND spent_on = ?) AS expenses_today,
+       EXISTS (SELECT 1 FROM products WHERE shop_id = shops.id) AS has_products,
+       EXISTS (SELECT 1 FROM sales WHERE shop_id = shops.id) AS has_sales,
+       EXISTS (SELECT 1 FROM customers WHERE shop_id = shops.id) AS has_customers,
+       (EXISTS (SELECT 1 FROM users WHERE shop_id = shops.id AND role <> 'owner') OR EXISTS (SELECT 1 FROM email_tokens WHERE shop_id = shops.id AND purpose = 'invite')) AS has_staff
+     FROM shops WHERE shops.id = ?`,
+    [today, shopId],
+  )
+
+  const byDay = new Map(weekKeys.map((key) => [key, 0]))
+  for (const row of weekRows) {
+    const key = dayKey(timezone, new Date(row.created_at))
+    if (byDay.has(key)) byDay.set(key, roundMoney(byDay.get(key)! + Number(row.total)))
+  }
+  const lowProducts = lowRows.map(productFromRow)
+  return {
+    sales: roundMoney(Number(totals.sales)),
+    profit: roundMoney(Number(margin.margin) - Number(totals.discounts)),
+    lowStock: lowProducts.length,
+    salesCount: Number(totals.count),
+    lowProducts,
+    recent: await attachItems(pool, recentRows),
+    week: weekKeys.map((day) => ({ day, total: byDay.get(day) ?? 0 })),
+    creditOutstanding: roundMoney(Number(credit.owed)),
+    creditCustomers: Number(credit.customers),
+    target: setup?.daily_target === null || setup?.daily_target === undefined ? null : Number(setup.daily_target),
+    expensesToday: roundMoney(Number(setup?.expenses_today ?? 0)),
+    checklist: {
+      products: Boolean(setup?.has_products),
+      sale: Boolean(setup?.has_sales),
+      customers: Boolean(setup?.has_customers),
+      staff: Boolean(setup?.has_staff),
+      profile: Boolean(setup?.phone || setup?.address),
+      dayEnd: Boolean(setup?.report_enabled),
+    },
+  }
+}
+
+export async function localDbHealth() {
+  await (await getPool()).query('SELECT 1')
 }

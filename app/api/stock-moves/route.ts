@@ -1,13 +1,14 @@
 import { NextResponse } from 'next/server'
+import { isSelfHosted, jsonResponse, parseBody, withShop } from '@/lib/local-session'
 import { z } from 'zod'
-import { adjustLocalStock, LocalDataError } from '@/lib/local-db'
+import { adjustLocalStock } from '@/lib/local-db'
 import { createClient } from '@/lib/supabase/server'
 
 export const runtime = 'nodejs'
 
 const schema = z.object({
   product_id: z.string().uuid(),
-  delta: z.coerce.number().finite().refine((value) => value !== 0, 'Stock change cannot be zero.'),
+  delta: z.coerce.number().finite().min(-1_000_000_000).max(1_000_000_000).refine((value) => value !== 0, 'Stock change cannot be zero.'),
   reason: z.string().trim().min(2).max(200),
 })
 
@@ -16,6 +17,13 @@ function json(data: unknown, error: string | null = null, status = 200) {
 }
 
 export async function POST(request: Request) {
+  if (isSelfHosted()) {
+    return withShop(request, 'inventory', 'Unable to adjust stock.', async ({ shop, user }) => {
+      const body = await parseBody(request, schema)
+      if (body instanceof NextResponse) return body
+      return jsonResponse(await adjustLocalStock(shop.id, body.data.product_id, body.data.delta, body.data.reason, user.id))
+    })
+  }
   let body: unknown
   try {
     body = await request.json()
@@ -24,15 +32,6 @@ export async function POST(request: Request) {
   }
   const parsed = schema.safeParse(body)
   if (!parsed.success) return json(null, parsed.error.issues[0]?.message ?? 'Invalid stock adjustment.', 400)
-
-  if (process.env.SHOPOS_STORAGE === 'sqlite') {
-    try {
-      return json(adjustLocalStock(parsed.data.product_id, parsed.data.delta, parsed.data.reason))
-    } catch (error) {
-      if (error instanceof LocalDataError) return json(null, error.message, error.status)
-      return json(null, 'Unable to adjust stock.', 500)
-    }
-  }
 
   try {
     const supabase = await createClient()
