@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { createClient } from '@/lib/supabase/server'
 import { defaultShopId, getCustomers } from '@/lib/db'
+import { isSelfHosted } from '@/lib/local-session'
+import { createRoute, listRoute } from '@/lib/party-routes'
+
+const listSelfHosted = listRoute('customers')
+const createSelfHosted = createRoute('customers')
 
 const schema = z.object({
   name: z.string().trim().min(1, 'Customer name is required.').max(160),
@@ -13,7 +18,7 @@ const schema = z.object({
 const json = (data: unknown, error: string | null = null, status = 200) => NextResponse.json({ data, error }, { status })
 
 export async function GET(request: NextRequest) {
-  if (process.env.SHOPOS_STORAGE === 'sqlite') return json(null, 'Customer records are not configured for SQLite storage.', 501)
+  if (isSelfHosted()) return listSelfHosted(request)
   try {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
@@ -25,6 +30,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: Request) {
+  if (isSelfHosted()) return createSelfHosted(request)
   let body: unknown
   try {
     body = await request.json()
@@ -33,8 +39,6 @@ export async function POST(request: Request) {
   }
   const parsed = schema.safeParse(body)
   if (!parsed.success) return json(null, parsed.error.issues[0]?.message ?? 'Invalid customer details.', 400)
-  if (process.env.SHOPOS_STORAGE === 'sqlite') return json(null, 'Customer records are not configured for SQLite storage.', 501)
-
   try {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()

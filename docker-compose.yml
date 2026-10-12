@@ -1,41 +1,166 @@
+# Deployment stack for preprod and production: MariaDB, the Next.js app, HTTPS via Caddy, daily backups.
+# Each environment gets its own project name and env file:
+#   docker compose -p shopos-prod --env-file .env.production up -d --build --wait
+#   docker compose -p shopos-preprod --env-file .env.preprod up -d --build --wait
+# See .env.production.example for every setting and DEPLOYMENT.md for operations.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-db-credentials: &db-credentials
+  SHOPOS_DB_NAME: ${SHOPOS_DB_NAME:-shopos}
+  SHOPOS_DB_USER: ${SHOPOS_DB_USER:-shopos}
+  SHOPOS_DB_PASSWORD: ${SHOPOS_DB_PASSWORD:?Set SHOPOS_DB_PASSWORD in the env file}
+
 services:
-  shopos:
+  db:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${SHOPOS_DB_ROOT_PASSWORD:?Set SHOPOS_DB_ROOT_PASSWORD in the env file}
+      MARIADB_DATABASE: ${SHOPOS_DB_NAME:-shopos}
+      MARIADB_USER: ${SHOPOS_DB_USER:-shopos}
+      MARIADB_PASSWORD: ${SHOPOS_DB_PASSWORD:?Set SHOPOS_DB_PASSWORD in the env file}
+      MARIADB_AUTO_UPGRADE: "1"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+      - --innodb-buffer-pool-size=${SHOPOS_DB_BUFFER_POOL:-256M}
+    volumes:
+      - db-data:/var/lib/mysql
+    # No ports: the database is reachable only from the app and backup containers.
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+  app:
     build:
       context: .
       dockerfile: Dockerfile
-    image: shopos:local
-    container_name: shopos
+    image: shopos:${SHOPOS_VERSION:-local}
     restart: unless-stopped
-    expose:
-      - "3000"
-    env_file:
-      - path: .env.local
-        required: false
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
+      <<: *db-credentials
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
-      SHOPOS_STORAGE: sqlite
       PORT: 3000
-    volumes:
-      - shopos-data:/app/.data
+      SHOPOS_STORAGE: mariadb
+      SHOPOS_DB_HOST: db
+      SHOPOS_DB_PORT: 3306
+      # Links in emails (verify, reset, invite) start with this address.
+      SHOPOS_PUBLIC_URL: ${SHOPOS_PUBLIC_URL:?Set SHOPOS_PUBLIC_URL in the env file}
+      # Outgoing email. With COMPOSE_PROFILES=mailpit these point at the local Mailpit inbox.
+      SHOPOS_SMTP_HOST: ${SHOPOS_SMTP_HOST:?Set SHOPOS_SMTP_HOST in the env file}
+      SHOPOS_SMTP_PORT: ${SHOPOS_SMTP_PORT:-587}
+      SHOPOS_SMTP_SECURE: ${SHOPOS_SMTP_SECURE:-false}
+      SHOPOS_SMTP_USER: ${SHOPOS_SMTP_USER:-}
+      SHOPOS_SMTP_PASSWORD: ${SHOPOS_SMTP_PASSWORD:-}
+      SHOPOS_MAIL_FROM: ${SHOPOS_MAIL_FROM:?Set SHOPOS_MAIL_FROM in the env file}
+      # New shop signups allowed per IP address per hour.
+      SHOPOS_SIGNUP_LIMIT: ${SHOPOS_SIGNUP_LIMIT:-10}
+      # Where shops send subscription payments (shown on their Billing page). Empty uses the built-in defaults.
+      SHOPOS_PAY_BANK_NAME: ${SHOPOS_PAY_BANK_NAME:-}
+      SHOPOS_PAY_ACCOUNT_TITLE: ${SHOPOS_PAY_ACCOUNT_TITLE:-}
+      SHOPOS_PAY_ACCOUNT_NUMBER: ${SHOPOS_PAY_ACCOUNT_NUMBER:-}
+      SHOPOS_PAY_IBAN: ${SHOPOS_PAY_IBAN:-}
+      SHOPOS_PAY_WALLET: ${SHOPOS_PAY_WALLET:-}
+      SHOPOS_PAY_WHATSAPP: ${SHOPOS_PAY_WHATSAPP:-}
+      # Automatic WhatsApp day-end reports through Meta's Cloud API (see DEPLOYMENT.md). Empty = off.
+      SHOPOS_WHATSAPP_TOKEN: ${SHOPOS_WHATSAPP_TOKEN:-}
+      SHOPOS_WHATSAPP_PHONE_ID: ${SHOPOS_WHATSAPP_PHONE_ID:-}
+      SHOPOS_WHATSAPP_TEMPLATE: ${SHOPOS_WHATSAPP_TEMPLATE:-daily_report}
+      SHOPOS_WHATSAPP_LANG: ${SHOPOS_WHATSAPP_LANG:-en}
+      # Server time zone (logs, backups). Each shop picks its own zone for "today" in Settings.
+      TZ: ${SHOPOS_TZ:-Asia/Karachi}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
-      interval: 30s
+      interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
+    mem_limit: ${SHOPOS_APP_MEMORY:-768m}
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
 
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: shopos-nginx
+  caddy:
+    image: caddy:2.10-alpine
     restart: unless-stopped
     depends_on:
-      shopos:
+      app:
         condition: service_healthy
     ports:
-      - "80:80"
+      - "${SHOPOS_HTTP_PORT:-80}:${SHOPOS_HTTP_PORT:-80}"
+      - "${SHOPOS_HTTPS_PORT:-443}:${SHOPOS_HTTPS_PORT:-443}"
+      - "${SHOPOS_HTTPS_PORT:-443}:${SHOPOS_HTTPS_PORT:-443}/udp"
+    environment:
+      SHOPOS_DOMAIN: ${SHOPOS_DOMAIN:?Set SHOPOS_DOMAIN in the env file}
+      SHOPOS_TLS: ${SHOPOS_TLS:-internal}
+      SHOPOS_HSTS: ${SHOPOS_HSTS:-max-age=0}
+      SHOPOS_HTTP_PORT: ${SHOPOS_HTTP_PORT:-80}
+      SHOPOS_HTTPS_PORT: ${SHOPOS_HTTPS_PORT:-443}
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+  # Local test inbox for environments without a real mail provider (COMPOSE_PROFILES=mailpit).
+  # Its web UI is published on this machine only.
+  mailpit:
+    image: axllent/mailpit:v1.31.4
+    profiles: ["mailpit"]
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    ports:
+      - "127.0.0.1:${SHOPOS_MAILPIT_UI_PORT:-8025}:8025"
+    volumes:
+      - mailpit-data:/data
+    command: ["--database", "/data/mailpit.db"]
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+  backup:
+    image: mariadb:11.4
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/usr/local/bin/db-backup.sh"]
+    environment:
+      <<: *db-credentials
+      BACKUP_INTERVAL_SECONDS: ${SHOPOS_BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_KEEP_DAYS: ${SHOPOS_BACKUP_KEEP_DAYS:-14}
+      TZ: ${SHOPOS_TZ:-Asia/Karachi}
+    volumes:
+      - ./scripts/db-backup.sh:/usr/local/bin/db-backup.sh:ro
+      # A host folder, so dumps are easy to copy off the machine.
+      - ${SHOPOS_BACKUP_DIR:-./backups}:/backups
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
 
 volumes:
-  shopos-data:
+  db-data:
+  caddy-data:
+  caddy-config:
+  mailpit-data:

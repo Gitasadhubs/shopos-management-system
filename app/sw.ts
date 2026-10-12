@@ -39,6 +39,11 @@ const serwist = new Serwist({
   precacheEntries: self.__SW_MANIFEST,
   runtimeCaching: [
     {
+      // Pages always come from the server so tills never show stale stock; offline, the fallback below applies.
+      matcher: ({ request }: { request: Request }) => request.mode === "navigate",
+      handler: new NetworkOnly(),
+    },
+    {
       matcher: ({ url }: { url: URL }) => ["/api/products", "/api/customers", "/api/suppliers", "/api/settings"].includes(url.pathname),
       handler: apiData,
     },
@@ -59,11 +64,12 @@ const serwist = new Serwist({
       handler: images,
     },
   ],
-  navigateFallback: "/offline",
-  navigateFallbackDenylist: [/^\/api\//, /^\/auth\//, /^\/login/, /^\/signup/],
+  // /offline is precached via additionalPrecacheEntries in next.config.mjs.
+  fallbacks: {
+    entries: [{ url: "/offline", matcher: ({ request }) => request.destination === "document" }],
+  },
   skipWaiting: true,
   clientsClaim: true,
-  reloadOnOnline: true,
-} as unknown as ConstructorParameters<typeof Serwist>[0])
+})
 
 serwist.addEventListeners()

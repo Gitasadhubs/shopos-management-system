@@ -3,7 +3,7 @@ import nextTypescript from "eslint-config-next/typescript";
 
 const eslintConfig = [
   {
-    ignores: [".next/**", "out/**", "build/**", "next-env.d.ts", "public/sw.js", "public/workbox-*.js"],
+    ignores: [".next/**", "out/**", "build/**", "next-env.d.ts", "public/sw.js", "public/workbox-*.js", "playwright-report/**", "test-results/**"],
   },
   ...nextVitals,
   ...nextTypescript,

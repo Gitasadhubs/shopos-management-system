@@ -21,7 +21,7 @@ export async function POST(request: Request) {
   }
   const parsed = schema.safeParse(body)
   if (!parsed.success) return json(null, parsed.error.issues[0]?.message ?? 'Invalid credit movement.', 400)
-  if (process.env.SHOPOS_STORAGE === 'sqlite') return json(null, 'Customer credit is not configured for SQLite storage.', 501)
+  if (process.env.SHOPOS_STORAGE === 'mariadb') return json(null, 'Customer credit is not available in self-hosted mode.', 501)
 
   try {
     const supabase = await createClient()

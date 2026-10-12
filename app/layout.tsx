@@ -38,7 +38,8 @@ export default function RootLayout({
     <html lang="en">
       <body className="antialiased">
         {children}
-        {process.env.NODE_ENV === 'production' && <Analytics />}
+        {/* Vercel Analytics only exists on Vercel; self-hosted builds would request a missing script. */}
+        {process.env.VERCEL && <Analytics />}
       </body>
     </html>
   )

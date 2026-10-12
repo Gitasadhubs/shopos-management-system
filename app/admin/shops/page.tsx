@@ -1,10 +1,50 @@
 import Link from 'next/link'
-import { requireAdmin, adminDataClient, formatDate, statusClass } from '@/lib/admin'
+import { Search } from 'lucide-react'
+import { formatDate, pkr, requirePlatformAdmin, STATE_STYLES } from '@/lib/admin'
+import { listShopsForAdmin, type SubscriptionState } from '@/lib/local-platform'
 
-export default async function ShopsPage({ searchParams }: { searchParams: Promise<{ q?: string; status?: string }> }) {
-  const { supabase } = await requireAdmin(); const params = await searchParams; const q = params.q?.trim() ?? ''; const status = params.status ?? 'all'
-  const { data: shops } = await supabase.from('shop_settings').select('shop_id,name,address,phone,created_at,subscription_status').order('created_at', { ascending: false })
-  const rows = shops ?? []; const ids = rows.map((row) => row.shop_id); const { data: subs } = ids.length ? await supabase.from('subscriptions').select('shop_id,plan,status,current_period_end').in('shop_id', ids) : { data: [] }; const subMap = new Map((subs ?? []).map((row) => [row.shop_id, row])); const roleRows = ids.length ? (await supabase.from('user_roles').select('shop_id,user_id,full_name').in('shop_id', ids)).data ?? [] : []; const userIds = roleRows.map((row) => row.user_id); const { data: users } = userIds.length ? await adminDataClient().auth.admin.listUsers({ perPage: 1000 }) : { data: { users: [] } }; const emailMap = new Map((users?.users ?? []).map((user) => [user.id, user.email]))
-  const filtered = rows.filter((shop) => { const sub = subMap.get(shop.shop_id); const owner = roleRows.find((row) => row.shop_id === shop.shop_id); const haystack = `${shop.name ?? ''} ${emailMap.get(owner?.user_id ?? '') ?? ''}`.toLowerCase(); return (!q || haystack.includes(q.toLowerCase())) && (status === 'all' || (sub?.status ?? shop.subscription_status) === status) })
-  return <section className="p-5 sm:p-8"><h1 className="text-3xl font-bold">Shops</h1><p className="mt-2 text-stone-500">Every business on ShopOS.</p><form className="mt-6 flex flex-col gap-3 sm:flex-row"><input name="q" defaultValue={q} placeholder="Search shop or owner email" className="h-11 flex-1 rounded-xl border border-stone-200 bg-white px-4 text-sm outline-none focus:border-emerald-500" /><button className="rounded-xl bg-emerald-600 px-5 font-semibold text-white">Search</button></form><div className="my-5 flex gap-2 overflow-x-auto">{['all','trialing','active','expired'].map((item) => <Link key={item} href={`/admin/shops?status=${item}${q ? `&q=${encodeURIComponent(q)}` : ''}`} className={`rounded-full px-4 py-2 text-sm font-semibold capitalize ${status === item ? 'bg-emerald-600 text-white' : 'bg-white text-stone-600 ring-1 ring-stone-200'}`}>{item}</Link>)}</div><div className="overflow-x-auto rounded-2xl border border-stone-200 bg-white"><table className="w-full min-w-[850px] text-left text-sm"><thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr>{['Shop name','Owner email','Phone','Status','Plan','Period ends','Actions'].map((head) => <th key={head} className="px-5 py-3">{head}</th>)}</tr></thead><tbody>{filtered.map((shop) => { const sub = subMap.get(shop.shop_id); const owner = roleRows.find((row) => row.shop_id === shop.shop_id); return <tr key={shop.shop_id} className="border-t border-stone-100 hover:bg-stone-50"><td className="px-5 py-4 font-semibold"><Link href={`/admin/shops/${shop.shop_id}`}>{shop.name ?? 'Unnamed shop'}</Link></td><td className="px-5 py-4 text-stone-600">{emailMap.get(owner?.user_id ?? '') ?? '—'}</td><td className="px-5 py-4 text-stone-600">{shop.phone ?? '—'}</td><td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClass(sub?.status ?? shop.subscription_status)}`}>{sub?.status ?? shop.subscription_status ?? 'unknown'}</span></td><td className="px-5 py-4 capitalize text-stone-600">{sub?.plan ?? '—'}</td><td className="px-5 py-4 text-stone-600">{formatDate(sub?.current_period_end)}</td><td className="px-5 py-4"><Link href={`/admin/shops/${shop.shop_id}`} className="font-semibold text-emerald-700">View</Link></td></tr> })}</tbody></table></div></section>
+export const dynamic = 'force-dynamic'
+
+const STATES = ['all', 'trialing', 'active', 'expired', 'suspended'] as const
+
+export default async function ShopsPage({ searchParams }: { searchParams: Promise<{ q?: string; state?: string }> }) {
+  await requirePlatformAdmin()
+  const params = await searchParams
+  const q = (params.q ?? '').slice(0, 100)
+  const state = (STATES as readonly string[]).includes(params.state ?? '') ? (params.state as SubscriptionState | 'all') : 'all'
+  const shops = await listShopsForAdmin({ search: q, state })
+  const link = (next: string) => `/admin/shops?${new URLSearchParams({ ...(q ? { q } : {}), ...(next !== 'all' ? { state: next } : {}) })}`
+
+  return (
+    <section className="p-5 sm:p-8">
+      <h1 className="text-3xl font-bold">Shops</h1>
+      <p className="mt-2 text-stone-500">Every shop on this ShopOS service.</p>
+
+      <div className="my-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <form className="relative flex-1" action="/admin/shops">
+          {state !== 'all' && <input type="hidden" name="state" value={state} />}
+          <Search className="absolute left-3 top-3.5 size-4 text-stone-400" />
+          <input name="q" defaultValue={q} aria-label="Search shops" placeholder="Search by shop, owner email or phone" className="h-11 w-full rounded-xl border border-stone-200 bg-white pl-9 pr-3 text-sm outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10" />
+        </form>
+        <div className="flex flex-wrap gap-2">{STATES.map((item) => <Link key={item} href={link(item)} className={`rounded-full px-4 py-2 text-sm font-semibold capitalize ${state === item ? 'bg-emerald-600 text-white' : 'bg-white text-stone-600 ring-1 ring-stone-200'}`}>{item}</Link>)}</div>
+      </div>
+
+      <div className="overflow-x-auto rounded-2xl border border-stone-200 bg-white shadow-sm">
+        {shops.length ? <table className="w-full min-w-[900px] text-left text-sm">
+          <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr>{['Shop', 'Owner', 'Status', 'Price', 'Period ends', 'Users', 'Products', 'Sales (30d)', ''].map((head) => <th key={head} className="px-5 py-3">{head}</th>)}</tr></thead>
+          <tbody>{shops.map((shop) => <tr key={shop.id} className="border-t border-stone-100 hover:bg-stone-50/60">
+            <td className="px-5 py-4"><p className="font-semibold">{shop.name}</p><p className="text-xs text-stone-500">Joined {formatDate(shop.created_at)}{shop.phone ? ` · ${shop.phone}` : ''}</p></td>
+            <td className="px-5 py-4"><p>{shop.owner_name ?? '—'}</p><p className="text-xs text-stone-500">{shop.owner_email ?? ''}</p></td>
+            <td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${STATE_STYLES[shop.subscription.state]}`}>{shop.subscription.state}</span></td>
+            <td className="px-5 py-4">{pkr(shop.subscription.price_pkr)}</td>
+            <td className="px-5 py-4 text-stone-600">{formatDate(shop.subscription.current_period_end)}<p className="text-xs text-stone-400">{shop.subscription.state === 'trialing' || shop.subscription.state === 'active' ? `${shop.subscription.days_left} days left` : ''}</p></td>
+            <td className="px-5 py-4 tabular-nums">{shop.users}</td>
+            <td className="px-5 py-4 tabular-nums">{shop.products}</td>
+            <td className="px-5 py-4 tabular-nums">{shop.sales_30d}<p className="text-xs text-stone-400">{shop.last_sale_at ? `last ${formatDate(shop.last_sale_at)}` : 'no sales'}</p></td>
+            <td className="px-5 py-4 text-right"><Link href={`/admin/shops/${shop.id}`} className="font-semibold text-emerald-700">Manage</Link></td>
+          </tr>)}</tbody>
+        </table> : <p className="p-10 text-center text-sm text-stone-500">{q || state !== 'all' ? 'No shops match.' : 'No shops yet.'}</p>}
+      </div>
+    </section>
+  )
 }

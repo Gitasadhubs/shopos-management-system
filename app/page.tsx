@@ -1,15 +1,7 @@
-import ShopOSApp from '@/components/shopos-app'
-import { AuthProvider } from '@/components/auth/auth-provider'
-import { SyncProvider } from '@/hooks/use-sync-engine'
+import { AppRoot } from '@/components/app-root'
 
 export default function Page() {
-  return (
-    <AuthProvider>
-      <SyncProvider enabled={process.env.SHOPOS_STORAGE !== 'sqlite'}>
-        <ShopOSApp />
-      </SyncProvider>
-    </AuthProvider>
-  )
+  return <AppRoot />
 }
 
 export const dynamic = 'force-dynamic'

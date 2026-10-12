@@ -4,14 +4,16 @@ import { localDbHealth } from '@/lib/local-db'
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-export function GET() {
-	if (process.env.SHOPOS_STORAGE === 'sqlite') {
+const noStore = { 'Cache-Control': 'no-store, no-cache, must-revalidate' }
+
+export async function GET() {
+	if (process.env.SHOPOS_STORAGE === 'mariadb') {
 		try {
-			localDbHealth()
-			return NextResponse.json({ ok: true, storage: 'sqlite', ts: Date.now() }, { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } })
+			await localDbHealth()
+			return NextResponse.json({ ok: true, storage: 'mariadb', ts: Date.now() }, { headers: noStore })
 		} catch {
-			return NextResponse.json({ ok: false, error: 'SQLite database is unavailable.' }, { status: 503 })
+			return NextResponse.json({ ok: false, error: 'Database is unavailable.' }, { status: 503, headers: noStore })
 		}
 	}
-	return NextResponse.json({ ok: true, storage: 'supabase', ts: Date.now() }, { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } })
+	return NextResponse.json({ ok: true, storage: 'supabase', ts: Date.now() }, { headers: noStore })
 }

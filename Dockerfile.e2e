@@ -1,0 +1,7 @@
+# Keep this tag, the shopos-playwright image tag in docker-compose.dev.yml and scripts/e2e.ps1,
+# and the @playwright/test version in package.json in step.
+FROM mcr.microsoft.com/playwright:v1.64.0-noble
+WORKDIR /app
+COPY package.json package-lock.json* ./
+# Only the test runner is needed here, so skip install scripts.
+RUN npm ci --ignore-scripts --fetch-retries=5 --fetch-retry-mintimeout=20000

@@ -8,3 +8,9 @@ node_modules
 *.log
 .DS_Store
 README.md
+test-results
+playwright-report
+e2e
+playwright.config.ts
+backups
+.e2e-backups

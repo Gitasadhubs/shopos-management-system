@@ -1,6 +1,7 @@
 "use client"
 
-import { CloudOff, RefreshCw, ShoppingCart } from "lucide-react"
+import { RefreshCw, ShoppingCart } from "lucide-react"
+import { OfflineIllustration } from "@/components/illustrations"
 import Link from "next/link"
 import { useEffect, useState } from "react"
 
@@ -19,9 +20,7 @@ export default function OfflinePage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-background px-6 py-12">
       <div className="flex w-full max-w-md flex-col items-center gap-8 text-center">
-        <div className="flex size-20 items-center justify-center rounded-3xl bg-primary/10 text-primary">
-          <CloudOff aria-hidden="true" className="size-10" />
-        </div>
+        <OfflineIllustration className="h-40 w-auto shopos-float" />
         <div className="flex flex-col gap-3">
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-primary">ShopOS</p>
           <h1 className="text-4xl font-bold tracking-tight text-foreground">You&apos;re offline</h1>

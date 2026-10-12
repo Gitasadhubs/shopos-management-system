@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { createClient } from '@/lib/supabase/server'
+import { isSelfHosted } from '@/lib/local-session'
+import { paymentRoute } from '@/lib/party-routes'
+
+const paySelfHosted = paymentRoute('customers')
 
 export const runtime = 'nodejs'
 
@@ -14,6 +18,7 @@ const schema = z.object({
 const json = (data: unknown, error: string | null = null, status = 200) => NextResponse.json({ data, error }, { status })
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  if (isSelfHosted()) return paySelfHosted(request, { params })
   let body: unknown
   try {
     body = await request.json()
@@ -24,7 +29,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (!parsed.success) return json(null, parsed.error.issues[0]?.message ?? 'Invalid payment details.', 400)
   const customerId = (await params).id
   if (!z.string().uuid().safeParse(customerId).success) return json(null, 'Invalid customer id.', 400)
-  if (process.env.SHOPOS_STORAGE === 'sqlite') return json(null, 'Customer credit is not configured for SQLite storage.', 501)
 
   try {
     const supabase = await createClient()

@@ -1,0 +1,147 @@
+# Local development: next dev with hot reload against MariaDB.
+# Start: docker compose -f docker-compose.dev.yml up -d --build --renew-anon-volumes
+#   (--renew-anon-volumes refreshes node_modules after package.json changes)
+# Tests: .\scripts\e2e.ps1   (see that script for the preprod target)
+
+x-dev-db-env: &dev-db-env
+  MARIADB_ROOT_PASSWORD: dev-root
+  MARIADB_DATABASE: shopos
+  MARIADB_USER: shopos
+  MARIADB_PASSWORD: dev-password
+
+x-db-options: &db-options
+  - --character-set-server=utf8mb4
+  - --collation-server=utf8mb4_unicode_ci
+  - --default-time-zone=+00:00
+
+x-db-healthcheck: &db-healthcheck
+  test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+  interval: 5s
+  timeout: 5s
+  retries: 30
+  start_period: 20s
+
+x-app-healthcheck: &app-healthcheck
+  test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+  interval: 5s
+  timeout: 30s
+  retries: 30
+  start_period: 10s
+
+services:
+  mariadb-dev:
+    image: mariadb:11.4
+    environment: *dev-db-env
+    command: *db-options
+    # Exposed on localhost only, for DB tools such as HeidiSQL or DBeaver.
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - mariadb-dev-data:/var/lib/mysql
+    healthcheck: *db-healthcheck
+
+  # Dev inbox: every email the app sends shows up at http://localhost:8027.
+  mailpit-dev:
+    image: axllent/mailpit:v1.31.4
+    ports:
+      - "127.0.0.1:8027:8025"
+
+  shopos-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    image: shopos:dev
+    container_name: shopos-dev
+    depends_on:
+      mariadb-dev:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      SHOPOS_STORAGE: mariadb
+      SHOPOS_DB_HOST: mariadb-dev
+      SHOPOS_PUBLIC_URL: http://localhost:3000
+      SHOPOS_SMTP_HOST: mailpit-dev
+      SHOPOS_SMTP_PORT: 1025
+      SHOPOS_MAIL_FROM: ShopOS Dev <dev@shopos.local>
+      SHOPOS_DB_PORT: 3306
+      SHOPOS_DB_NAME: shopos
+      SHOPOS_DB_USER: shopos
+      SHOPOS_DB_PASSWORD: dev-password
+      # "Today" on the dashboard follows this zone. Override with SHOPOS_TZ in the environment.
+      TZ: ${SHOPOS_TZ:-Asia/Karachi}
+      WATCHPACK_POLLING: "true"
+    volumes:
+      - .:/app
+      # Keep the container's Linux-built node_modules and build cache out of the host folder.
+      - /app/node_modules
+      - shopos-dev-next:/app/.next
+
+  # E2E tests (profile "test"): a second app instance and a database that lives in memory,
+  # so every run starts empty and nothing touches dev data.
+  mariadb-test:
+    profiles: ["test"]
+    image: mariadb:11.4
+    environment: *dev-db-env
+    command: *db-options
+    tmpfs:
+      - /var/lib/mysql:uid=999,gid=999
+    healthcheck: *db-healthcheck
+
+  mailpit-test:
+    profiles: ["test"]
+    image: axllent/mailpit:v1.31.4
+
+  shopos-test:
+    profiles: ["test"]
+    image: shopos:dev
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    depends_on:
+      mariadb-test:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      SHOPOS_STORAGE: mariadb
+      SHOPOS_DB_HOST: mariadb-test
+      SHOPOS_PUBLIC_URL: http://shopos-test:3000
+      SHOPOS_SMTP_HOST: mailpit-test
+      SHOPOS_SMTP_PORT: 1025
+      SHOPOS_MAIL_FROM: ShopOS Test <test@shopos.local>
+      # The suite signs up many shops from one container.
+      SHOPOS_SIGNUP_LIMIT: 1000
+      SHOPOS_DB_PORT: 3306
+      SHOPOS_DB_NAME: shopos
+      SHOPOS_DB_USER: shopos
+      SHOPOS_DB_PASSWORD: dev-password
+      TZ: ${SHOPOS_TZ:-Asia/Karachi}
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - shopos-test-next:/app/.next
+    healthcheck: *app-healthcheck
+
+  playwright:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    image: shopos-playwright:1.64.0
+    environment:
+      BASE_URL: http://shopos-test:3000
+      E2E_TARGET: dev
+      MAILPIT_URL: http://mailpit-test:8025
+      CI: "true"
+    ipc: host
+    init: true
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: ["npx", "playwright", "test"]
+
+volumes:
+  mariadb-dev-data:
+  shopos-dev-next:
+  shopos-test-next:

@@ -1,0 +1,33 @@
+# HTTPS reverse proxy for ShopOS. Values come from the compose env file (see .env.production.example).
+# SHOPOS_TLS=internal  -> Caddy's own CA (no public domain needed; devices must trust its root certificate)
+# SHOPOS_TLS=<email>   -> a real Let's Encrypt certificate for SHOPOS_DOMAIN (must be publicly reachable)
+
+{
+	# Caddy listens on the same ports the host publishes.
+	http_port {$SHOPOS_HTTP_PORT}
+	https_port {$SHOPOS_HTTPS_PORT}
+	# Caddy's own HTTP->HTTPS redirect drops a non-standard port (preprod's 8443 would land on
+	# production's 443), so the redirect is explicit below.
+	auto_https disable_redirects
+}
+
+http://{$SHOPOS_DOMAIN} {
+	redir https://{host}:{$SHOPOS_HTTPS_PORT}{uri} 308
+}
+
+{$SHOPOS_DOMAIN} {
+	tls {$SHOPOS_TLS}
+
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "{$SHOPOS_HSTS}"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Sign-in is handled by the app (email + password accounts).
+	reverse_proxy app:3000
+}

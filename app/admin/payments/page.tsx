@@ -1,2 +1,36 @@
-import { requireAdmin } from '@/lib/admin'
-export default async function PaymentsPage() { const { supabase } = await requireAdmin(); const { data } = await supabase.from('subscriptions').select('amount_pkr').eq('status','active'); const total = (data ?? []).reduce((sum, row) => sum + Number(row.amount_pkr ?? 0), 0); return <section className="p-5 sm:p-8"><p className="text-sm font-semibold text-emerald-700">Finance</p><h1 className="mt-1 text-3xl font-bold">Payments</h1><p className="mt-2 text-stone-500">Payments are tracked manually in Google Sheets for now.</p><div className="mt-8 max-w-md rounded-2xl bg-emerald-50 p-6"><p className="text-sm text-emerald-800">Total revenue this month</p><p className="mt-2 text-4xl font-bold text-emerald-950">₨{total.toLocaleString()}</p></div><div className="mt-6 rounded-2xl border border-dashed border-stone-300 bg-white p-10 text-center"><h2 className="font-bold">No payment records yet</h2><p className="mt-2 text-sm text-stone-500">Add payment confirmations to your team sheet when they arrive.</p></div></section> }
+import Link from 'next/link'
+import { formatDateTime, pkr, requirePlatformAdmin } from '@/lib/admin'
+import { listSubscriptionPayments, platformOverview } from '@/lib/local-platform'
+
+export const dynamic = 'force-dynamic'
+
+export default async function PaymentsPage() {
+  await requirePlatformAdmin()
+  const [payments, overview] = await Promise.all([listSubscriptionPayments(200), platformOverview()])
+
+  return (
+    <section className="p-5 sm:p-8">
+      <p className="text-sm font-semibold text-emerald-700">Finance</p>
+      <h1 className="mt-1 text-3xl font-bold">Payments</h1>
+      <p className="mt-2 text-stone-500">Subscription payments recorded from each shop&apos;s page.</p>
+      <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        <div className="rounded-2xl bg-emerald-50 p-5"><p className="text-sm text-emerald-800">Collected this month</p><p className="mt-2 text-3xl font-bold text-emerald-950">{pkr(overview.revenueThisMonth)}</p></div>
+        <div className="rounded-2xl bg-violet-50 p-5"><p className="text-sm text-violet-800">Monthly recurring</p><p className="mt-2 text-3xl font-bold text-violet-950">{pkr(overview.mrr)}</p></div>
+        <div className="rounded-2xl bg-amber-50 p-5"><p className="text-sm text-amber-800">All time</p><p className="mt-2 text-3xl font-bold text-amber-950">{pkr(overview.revenueAllTime)}</p></div>
+      </div>
+      <div className="mt-6 overflow-x-auto rounded-2xl border border-stone-200 bg-white shadow-sm">
+        {payments.length ? <table className="w-full min-w-[720px] text-left text-sm">
+          <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr>{['Date', 'Shop', 'Amount', 'Method', 'Reference', 'Months'].map((head) => <th key={head} className="px-5 py-3">{head}</th>)}</tr></thead>
+          <tbody>{payments.map((payment) => <tr key={payment.id} className="border-t border-stone-100">
+            <td className="px-5 py-4 text-stone-600">{formatDateTime(payment.created_at)}</td>
+            <td className="px-5 py-4 font-semibold"><Link href={`/admin/shops/${payment.shop_id}`} className="hover:text-emerald-700">{payment.shop_name}</Link></td>
+            <td className="px-5 py-4 font-semibold tabular-nums">{pkr(payment.amount)}</td>
+            <td className="px-5 py-4 capitalize">{payment.method}</td>
+            <td className="px-5 py-4 text-stone-600">{payment.reference ?? '—'}</td>
+            <td className="px-5 py-4">{payment.months}</td>
+          </tr>)}</tbody>
+        </table> : <div className="p-10 text-center"><h2 className="font-bold">No payments yet</h2><p className="mt-2 text-sm text-stone-500">Open a shop and use “Record a payment” when money arrives.</p></div>}
+      </div>
+    </section>
+  )
+}

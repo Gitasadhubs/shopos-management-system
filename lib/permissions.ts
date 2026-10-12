@@ -4,10 +4,12 @@ export const PERMISSIONS = {
   manager: ['dashboard.view', 'pos.*', 'inventory.*', 'customers.*', 'suppliers.*', 'purchases.*', 'reports.view', 'settings.view'],
   cashier: ['dashboard.view', 'pos.*', 'customers.view'],
 } as const
-export type Permission = 'dashboard' | 'pos' | 'inventory' | 'purchases' | 'customers' | 'suppliers' | 'reports' | 'settings' | 'users'
-export function can(role: Role | null | undefined, permission: Permission) {
+export type Permission = 'dashboard' | 'pos' | 'inventory' | 'purchases' | 'customers' | 'suppliers' | 'reports' | 'expenses' | 'settings' | 'users' | 'billing'
+// Accepts any role string: a platform admin ('admin') belongs to no shop, so it has no shop permissions.
+export function can(role: Role | string | null | undefined, permission: Permission) {
   if (!role) return false
   if (role === 'owner') return true
   if (role === 'cashier') return ['dashboard', 'pos', 'customers'].includes(permission)
-  return true
+  // Managers run the shop but cannot manage staff accounts or the subscription.
+  return role === 'manager' && permission !== 'users' && permission !== 'billing'
 }

@@ -1,8 +1,109 @@
 import Link from 'next/link'
-import { requireAdmin, adminDataClient, formatDate, statusClass } from '@/lib/admin'
-import { updateSubscription, resetDemoData } from '../../actions'
+import { notFound } from 'next/navigation'
+import { ArrowLeft, Ban, CalendarPlus, History, PlayCircle, Receipt, Tag, TimerOff, Users } from 'lucide-react'
+import { formatDate, formatDateTime, pkr, requirePlatformAdmin, STATE_STYLES } from '@/lib/admin'
+import { getShopForAdmin } from '@/lib/local-platform'
+import { changeSubscriptionAction, recordPaymentAction } from '../../actions'
 
-export default async function ShopDetail({ params }: { params: Promise<{ shopId: string }> }) {
-  const { supabase } = await requireAdmin(); const { shopId } = await params; const [{ data: shop }, { data: sub }, { count: sales }, { count: products }, { count: customers }, { data: revenue }, { data: roles }] = await Promise.all([supabase.from('shop_settings').select('*').eq('shop_id', shopId).single(), supabase.from('subscriptions').select('*').eq('shop_id', shopId).single(), supabase.from('sales').select('*', { count: 'exact', head: true }).eq('shop_id', shopId), supabase.from('products').select('*', { count: 'exact', head: true }).eq('shop_id', shopId), supabase.from('customers').select('*', { count: 'exact', head: true }).eq('shop_id', shopId), supabase.from('sales').select('total').eq('shop_id', shopId), supabase.from('user_roles').select('user_id,full_name').eq('shop_id', shopId).limit(1)]); const ownerId = roles?.[0]?.user_id; const { data: users } = ownerId ? await adminDataClient().auth.admin.listUsers({ perPage: 1000 }) : { data: { users: [] } }; const owner = users?.users.find((user) => user.id === ownerId); const totalRevenue = (revenue ?? []).reduce((sum, row) => sum + Number(row.total ?? 0), 0)
-  return <section className="p-5 sm:p-8"><Link href="/admin/shops" className="text-sm font-semibold text-emerald-700">← Back to shops</Link><div className="mt-5 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm font-semibold text-emerald-700">Shop profile</p><h1 className="mt-1 text-3xl font-bold">{shop?.name ?? 'Unnamed shop'}</h1></div><span className={`w-fit rounded-full px-3 py-1 text-xs font-semibold ${statusClass(sub?.status ?? shop?.subscription_status)}`}>{sub?.status ?? shop?.subscription_status}</span></div><div className="mt-8 grid gap-5 lg:grid-cols-2"><article className="rounded-2xl border border-stone-200 bg-white p-5"><h2 className="font-bold">Profile</h2><dl className="mt-4 grid gap-3 text-sm"><div><dt className="text-stone-500">Owner email</dt><dd>{owner?.email ?? '—'}</dd></div><div><dt className="text-stone-500">Address</dt><dd>{shop?.address ?? '—'}</dd></div><div><dt className="text-stone-500">Phone</dt><dd>{shop?.phone ?? '—'}</dd></div><div><dt className="text-stone-500">Created</dt><dd>{formatDate(shop?.created_at)}</dd></div></dl></article><article className="rounded-2xl border border-stone-200 bg-white p-5"><h2 className="font-bold">Subscription</h2><dl className="mt-4 grid gap-3 text-sm"><div><dt className="text-stone-500">Plan / amount</dt><dd className="capitalize">{sub?.plan ?? '—'} · ₨{Number(sub?.amount_pkr ?? 0).toLocaleString()}</dd></div><div><dt className="text-stone-500">Period ends</dt><dd>{formatDate(sub?.current_period_end)}</dd></div><div><dt className="text-stone-500">Trial ends</dt><dd>{formatDate(sub?.trial_ends_at)}</dd></div></dl></article></div><div className="mt-5 grid gap-4 sm:grid-cols-4">{[['Sales', sales ?? 0],['Products', products ?? 0],['Customers', customers ?? 0],['Revenue', `₨${totalRevenue.toLocaleString()}`]].map(([label, value]) => <div key={String(label)} className="rounded-2xl bg-emerald-50 p-5"><p className="text-sm text-emerald-800">{label}</p><p className="mt-2 text-2xl font-bold text-emerald-950">{value}</p></div>)}</div><div className="mt-5 flex flex-wrap gap-3"><form action={updateSubscription.bind(null, shopId, 'activate')}><button className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white">Activate 30 days</button></form><form action={updateSubscription.bind(null, shopId, 'extend')}><button className="rounded-xl bg-amber-500 px-4 py-2 text-sm font-semibold text-white">Extend 30 days</button></form><form action={updateSubscription.bind(null, shopId, 'suspend')}><button className="rounded-xl bg-stone-700 px-4 py-2 text-sm font-semibold text-white">Suspend</button></form><form action={updateSubscription.bind(null, shopId, 'expire')}><button className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white">Expire</button></form>{shopId === '00000000-0000-0000-0000-000000000001' && <form action={resetDemoData.bind(null, shopId)}><button className="rounded-xl border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700">Reset demo data</button></form>}</div></section>
+export const dynamic = 'force-dynamic'
+
+const input = 'mt-1.5 h-10 w-full rounded-lg border border-stone-200 bg-white px-3 text-sm outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10'
+const EVENT_LABELS: Record<string, string> = { trial_started: 'Trial started', payment: 'Payment recorded', extended: 'Days added', suspended: 'Suspended', resumed: 'Resumed', expired: 'Ended', price_changed: 'Price changed' }
+
+export default async function ShopDetail({ params, searchParams }: { params: Promise<{ shopId: string }>; searchParams: Promise<{ notice?: string; error?: string }> }) {
+  await requirePlatformAdmin()
+  const { shopId } = await params
+  if (!/^[0-9a-f-]{36}$/i.test(shopId)) notFound()
+  const detail = await getShopForAdmin(shopId)
+  if (!detail) notFound()
+  const { notice, error } = await searchParams
+  const { shop, usage, users, payments, events } = detail
+  const sub = shop.subscription
+
+  return (
+    <section className="p-5 sm:p-8">
+      <Link href="/admin/shops" className="inline-flex items-center gap-2 text-sm font-medium text-emerald-700"><ArrowLeft className="size-4" />All shops</Link>
+      <div className="mt-4 flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+        <div>
+          <h1 className="text-3xl font-bold">{shop.name}</h1>
+          <p className="mt-1 text-sm text-stone-500">{[shop.phone, shop.address].filter(Boolean).join(' · ') || 'No contact details'} · joined {formatDate(shop.created_at)} · ID {shop.id.slice(0, 8)}</p>
+        </div>
+        <div className="rounded-2xl border border-stone-200 bg-white p-4 text-right shadow-sm">
+          <span className={`rounded-full px-3 py-1 text-xs font-semibold capitalize ${STATE_STYLES[sub.state]}`}>{sub.state}</span>
+          <p className="mt-2 text-sm text-stone-500">{sub.state === 'suspended' ? 'Period would end' : sub.state === 'expired' ? 'Ended' : 'Period ends'} {formatDate(sub.current_period_end)}</p>
+          <p className="text-sm font-semibold">{pkr(sub.price_pkr)} / month</p>
+        </div>
+      </div>
+
+      {notice && <p role="status" className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 shopos-rise">{notice}</p>}
+      {error && <p role="alert" className="mt-6 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700 shopos-rise">{error}</p>}
+
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        {[['Products', usage.products], ['Customers', usage.customers], ['Sales (all time)', usage.sales], ['Revenue (30 days)', pkr(usage.revenue_30d)], ['Last sale', usage.last_sale_at ? formatDate(usage.last_sale_at) : 'None']].map(([label, value]) => <div key={String(label)} className="rounded-2xl border border-stone-200 bg-white p-4 shadow-sm"><p className="text-xs text-stone-500">{label}</p><p className="mt-1 text-xl font-bold tabular-nums">{value}</p></div>)}
+      </div>
+
+      <div className="mt-6 grid gap-6 xl:grid-cols-2">
+        <form action={recordPaymentAction} className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+          <h2 className="flex items-center gap-2 font-bold"><Receipt className="size-4 text-emerald-600" />Record a payment</h2>
+          <p className="mt-1 text-xs text-stone-500">Adds the months on top of any time already paid, and makes the shop active.</p>
+          <input type="hidden" name="shop_id" value={shop.id} />
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className="text-sm font-medium">Amount received (₨)<input name="amount" type="number" min="1" step="0.01" required defaultValue={sub.price_pkr} className={input} /></label>
+            <label className="text-sm font-medium">Months<input name="months" type="number" min="1" max="24" required defaultValue={1} className={input} /></label>
+            <label className="text-sm font-medium">Method<select name="method" defaultValue="bank" className={input}><option value="bank">Bank transfer</option><option value="jazzcash">JazzCash</option><option value="easypaisa">EasyPaisa</option><option value="cash">Cash</option><option value="other">Other</option></select></label>
+            <label className="text-sm font-medium">Reference<input name="reference" maxLength={120} placeholder="Transaction ID" className={input} /></label>
+          </div>
+          <button className="mt-4 h-11 w-full rounded-xl bg-emerald-600 font-semibold text-white hover:bg-emerald-700">Record payment</button>
+        </form>
+
+        <div className="grid gap-4 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+          <h2 className="font-bold">Subscription controls</h2>
+          <form action={changeSubscriptionAction} className="flex items-end gap-2">
+            <input type="hidden" name="shop_id" value={shop.id} /><input type="hidden" name="action" value="add_days" />
+            <label className="flex-1 text-sm font-medium">Free days to add<input name="days" type="number" min="1" max="365" required defaultValue={7} className={input} /></label>
+            <button className="flex h-10 items-center gap-2 rounded-lg bg-stone-900 px-4 text-sm font-semibold text-white hover:bg-stone-800"><CalendarPlus className="size-4" />Add days</button>
+          </form>
+          <form action={changeSubscriptionAction} className="flex items-end gap-2">
+            <input type="hidden" name="shop_id" value={shop.id} /><input type="hidden" name="action" value="set_price" />
+            <label className="flex-1 text-sm font-medium">Monthly price (₨)<input name="price" type="number" min="0" step="1" required defaultValue={sub.price_pkr} className={input} /></label>
+            <button className="flex h-10 items-center gap-2 rounded-lg border border-stone-200 px-4 text-sm font-semibold hover:bg-stone-50"><Tag className="size-4" />Save price</button>
+          </form>
+          <div className="flex flex-wrap gap-2 border-t pt-4">
+            {sub.state === 'suspended'
+              ? <form action={changeSubscriptionAction}><input type="hidden" name="shop_id" value={shop.id} /><input type="hidden" name="action" value="resume" /><button className="flex h-10 items-center gap-2 rounded-lg bg-emerald-50 px-4 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"><PlayCircle className="size-4" />Resume shop</button></form>
+              : <form action={changeSubscriptionAction}><input type="hidden" name="shop_id" value={shop.id} /><input type="hidden" name="action" value="suspend" /><button className="flex h-10 items-center gap-2 rounded-lg bg-rose-50 px-4 text-sm font-semibold text-rose-700 hover:bg-rose-100"><Ban className="size-4" />Suspend shop</button></form>}
+            {sub.state !== 'expired' && <form action={changeSubscriptionAction}><input type="hidden" name="shop_id" value={shop.id} /><input type="hidden" name="action" value="expire" /><button className="flex h-10 items-center gap-2 rounded-lg border border-stone-200 px-4 text-sm font-semibold text-stone-700 hover:bg-stone-50"><TimerOff className="size-4" />End subscription now</button></form>}
+          </div>
+          <p className="text-xs text-stone-500">Suspended or ended shops can still sign in and see their data, but cannot make changes.</p>
+        </div>
+      </div>
+
+      <div className="mt-6 grid gap-6 xl:grid-cols-2">
+        <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+          <h2 className="flex items-center gap-2 border-b px-5 py-4 font-bold"><Users className="size-4 text-emerald-600" />People ({users.length})</h2>
+          <ul className="divide-y">{users.map((user) => <li key={user.id} className="flex items-center justify-between gap-3 px-5 py-3 text-sm">
+            <div><p className="font-medium">{user.full_name}{!user.is_active && <span className="ml-2 rounded bg-stone-100 px-1.5 text-xs text-stone-500">disabled</span>}{!user.email_verified && <span className="ml-2 rounded bg-amber-100 px-1.5 text-xs text-amber-800">unconfirmed</span>}</p><p className="text-xs text-stone-500">{user.email}</p></div>
+            <div className="text-right"><p className="capitalize">{user.role}</p><p className="text-xs text-stone-400">{user.last_login_at ? `seen ${formatDate(user.last_login_at)}` : 'never signed in'}</p></div>
+          </li>)}</ul>
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+          <h2 className="flex items-center gap-2 border-b px-5 py-4 font-bold"><Receipt className="size-4 text-emerald-600" />Payments ({payments.length})</h2>
+          {payments.length ? <ul className="divide-y">{payments.map((payment) => <li key={payment.id} className="flex items-center justify-between gap-3 px-5 py-3 text-sm">
+            <div><p className="font-semibold">{pkr(payment.amount)} <span className="font-normal capitalize text-stone-500">· {payment.method}</span></p><p className="text-xs text-stone-500">{formatDateTime(payment.created_at)}{payment.reference ? ` · ${payment.reference}` : ''}</p></div>
+            <p className="text-right text-xs text-stone-500">{payment.months} month{payment.months === 1 ? '' : 's'}<br />until {formatDate(payment.period_end)}</p>
+          </li>)}</ul> : <p className="p-8 text-center text-sm text-stone-500">No payments yet.</p>}
+        </div>
+      </div>
+
+      <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+        <h2 className="flex items-center gap-2 font-bold"><History className="size-4 text-emerald-600" />History</h2>
+        {events.length ? <ol className="mt-4 grid gap-4 border-l-2 border-stone-100 pl-5">{events.map((event) => <li key={event.id} className="relative text-sm">
+          <span className="absolute -left-[27px] top-1 size-3 rounded-full border-2 border-white bg-emerald-500 ring-2 ring-emerald-100" />
+          <p className="font-medium">{EVENT_LABELS[event.event] ?? event.event}{event.detail && <span className="font-normal text-stone-600"> — {event.detail}</span>}</p>
+          <p className="text-xs text-stone-500">{formatDateTime(event.created_at)}{event.actor_name ? ` · by ${event.actor_name}` : ''}</p>
+        </li>)}</ol> : <p className="mt-4 text-sm text-stone-500">No history yet.</p>}
+      </div>
+    </section>
+  )
 }

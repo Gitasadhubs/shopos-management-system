@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { LoaderCircle, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { EmptyBoxIllustration } from '@/components/illustrations'
+import { playSound } from '@/lib/sounds'
 
 type Product = {
   id: string
@@ -52,18 +54,22 @@ export default function LocalInventory() {
   const [stockReason, setStockReason] = useState('')
   const [deleting, setDeleting] = useState<Product | null>(null)
 
+  // Search fires per keystroke; only the latest request may update the list.
+  const latestRequest = useRef(0)
+
   async function loadProducts() {
+    const request = ++latestRequest.current
     setLoading(true)
     setError('')
     try {
       const response = await fetch(`/api/products?search=${encodeURIComponent(search)}`, { cache: 'no-store' })
       const body = await response.json()
       if (!response.ok) throw new Error(body.error ?? 'Could not load products.')
-      setProducts(body.data ?? [])
+      if (request === latestRequest.current) setProducts(body.data ?? [])
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Could not load products.')
+      if (request === latestRequest.current) setError(loadError instanceof Error ? loadError.message : 'Could not load products.')
     } finally {
-      setLoading(false)
+      if (request === latestRequest.current) setLoading(false)
     }
   }
 
@@ -73,6 +79,7 @@ export default function LocalInventory() {
     setEditingId(null)
     setForm(emptyForm)
     setError('')
+    setSuccess('')
     setFormOpen(true)
   }
 
@@ -90,6 +97,7 @@ export default function LocalInventory() {
       reorder_level: String(product.reorder_level),
     })
     setError('')
+    setSuccess('')
     setFormOpen(true)
   }
 
@@ -113,9 +121,11 @@ export default function LocalInventory() {
       const body = await response.json()
       if (!response.ok) throw new Error(body.error ?? 'Could not save product.')
       setFormOpen(false)
+      playSound(editingId ? 'success' : 'add')
       setSuccess(editingId ? 'Product updated.' : 'Product added.')
       await loadProducts()
     } catch (saveError) {
+      playSound('error')
       setError(saveError instanceof Error ? saveError.message : 'Could not save product.')
     } finally {
       setSaving(false)
@@ -138,9 +148,11 @@ export default function LocalInventory() {
       setAdjusting(null)
       setStockDelta('')
       setStockReason('')
+      playSound('success')
       setSuccess('Stock updated.')
       await loadProducts()
     } catch (stockError) {
+      playSound('error')
       setError(stockError instanceof Error ? stockError.message : 'Could not adjust stock.')
     } finally {
       setSaving(false)
@@ -156,9 +168,11 @@ export default function LocalInventory() {
       const body = await response.json()
       if (!response.ok) throw new Error(body.error ?? 'Could not delete product.')
       setDeleting(null)
+      playSound('remove')
       setSuccess('Product deleted.')
       await loadProducts()
     } catch (deleteError) {
+      playSound('error')
       setError(deleteError instanceof Error ? deleteError.message : 'Could not delete product.')
     } finally {
       setSaving(false)
@@ -195,14 +209,14 @@ export default function LocalInventory() {
                 <td className="p-4">{money(product.cost_price)}</td><td className="p-4 font-semibold">{money(product.sale_price)}</td>
                 <td className="p-4">{product.stock_quantity} {product.stock_quantity <= product.reorder_level && <Badge className="ml-1 bg-amber-100 text-amber-800">Low</Badge>}</td><td className="p-4">{product.reorder_level}</td>
                 <td className="p-3 text-right"><div className="flex justify-end gap-1">
-                  <Button variant="ghost" size="icon" aria-label={`Adjust stock for ${product.name}`} title="Adjust stock" onClick={() => { setAdjusting(product); setError('') }}><SlidersHorizontal className="size-4" /></Button>
+                  <Button variant="ghost" size="icon" aria-label={`Adjust stock for ${product.name}`} title="Adjust stock" onClick={() => { setAdjusting(product); setStockDelta(''); setStockReason(''); setError(''); setSuccess('') }}><SlidersHorizontal className="size-4" /></Button>
                   <Button variant="ghost" size="icon" aria-label={`Edit ${product.name}`} title="Edit product" onClick={() => openEditProduct(product)}><Pencil className="size-4" /></Button>
-                  <Button variant="ghost" size="icon" aria-label={`Delete ${product.name}`} title="Delete product" onClick={() => { setDeleting(product); setError('') }}><Trash2 className="size-4 text-rose-600" /></Button>
+                  <Button variant="ghost" size="icon" aria-label={`Delete ${product.name}`} title="Delete product" onClick={() => { setDeleting(product); setError(''); setSuccess('') }}><Trash2 className="size-4 text-rose-600" /></Button>
                 </div></td>
               </tr>)}</tbody>
             </table>
             {loading && <div className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Loading products…</div>}
-            {!loading && !error && products.length === 0 && <p className="p-10 text-center text-sm text-muted-foreground">No products found. Add a product to get started.</p>}
+            {!loading && !error && products.length === 0 && <div className="flex flex-col items-center p-10 text-center"><EmptyBoxIllustration className="h-28 w-auto" /><p className="mt-3 text-sm text-muted-foreground">No products found. Add a product to get started.</p></div>}
           </div>
         </CardContent>
       </Card>
