@@ -4,7 +4,7 @@ import { getSessionUser, hasPlatformAdmin } from '@/lib/local-auth'
 import { sessionCookieName } from '@/lib/local-session'
 import { can, type Permission } from '@/lib/permissions'
 
-const protectedPaths = ['/dashboard', '/pos', '/inventory', '/customers', '/suppliers', '/purchases', '/reports', '/expenses', '/day-end', '/settings', '/setup', '/billing']
+const protectedPaths = ['/dashboard', '/pos', '/sales', '/inventory', '/customers', '/suppliers', '/purchases', '/reports', '/expenses', '/day-end', '/settings', '/setup', '/billing']
 const authPaths = ['/login', '/signup', '/forgot-password', '/reset-password']
 
 export async function proxy(request: NextRequest) {

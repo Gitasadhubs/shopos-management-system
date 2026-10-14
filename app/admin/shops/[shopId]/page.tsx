@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { ArrowLeft, Ban, CalendarPlus, History, PlayCircle, Receipt, Tag, TimerOff, Users } from 'lucide-react'
+import { ArrowLeft, Ban, CalendarPlus, History, ImageIcon, PlayCircle, Receipt, Tag, TimerOff, Users } from 'lucide-react'
+import { PaymentProofList } from '@/components/payment-proofs'
 import { formatDate, formatDateTime, pkr, requirePlatformAdmin, STATE_STYLES } from '@/lib/admin'
 import { getShopForAdmin } from '@/lib/local-platform'
 import { changeSubscriptionAction, recordPaymentAction } from '../../actions'
@@ -8,7 +9,7 @@ import { changeSubscriptionAction, recordPaymentAction } from '../../actions'
 export const dynamic = 'force-dynamic'
 
 const input = 'mt-1.5 h-10 w-full rounded-lg border border-stone-200 bg-white px-3 text-sm outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10'
-const EVENT_LABELS: Record<string, string> = { trial_started: 'Trial started', payment: 'Payment recorded', extended: 'Days added', suspended: 'Suspended', resumed: 'Resumed', expired: 'Ended', price_changed: 'Price changed' }
+const EVENT_LABELS: Record<string, string> = { trial_started: 'Trial started', payment: 'Payment recorded', extended: 'Days added', suspended: 'Suspended', resumed: 'Resumed', expired: 'Ended', price_changed: 'Price changed', proof_sent: 'Payment proof sent' }
 
 export default async function ShopDetail({ params, searchParams }: { params: Promise<{ shopId: string }>; searchParams: Promise<{ notice?: string; error?: string }> }) {
   await requirePlatformAdmin()
@@ -17,7 +18,8 @@ export default async function ShopDetail({ params, searchParams }: { params: Pro
   const detail = await getShopForAdmin(shopId)
   if (!detail) notFound()
   const { notice, error } = await searchParams
-  const { shop, usage, users, payments, events } = detail
+  const { shop, usage, users, payments, proofs, events } = detail
+  const waiting = proofs.filter((proof) => !proof.reviewed_at).length
   const sub = shop.subscription
 
   return (
@@ -94,6 +96,12 @@ export default async function ShopDetail({ params, searchParams }: { params: Pro
             <p className="text-right text-xs text-stone-500">{payment.months} month{payment.months === 1 ? '' : 's'}<br />until {formatDate(payment.period_end)}</p>
           </li>)}</ul> : <p className="p-8 text-center text-sm text-stone-500">No payments yet.</p>}
         </div>
+      </div>
+
+      <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+        <h2 className="flex items-center gap-2 border-b px-5 py-4 font-bold"><ImageIcon className="size-4 text-emerald-600" />Payment proofs ({proofs.length}){waiting > 0 && <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800">{waiting} waiting</span>}</h2>
+        {proofs.length ? <PaymentProofList proofs={proofs} /> : <p className="p-8 text-center text-sm text-stone-500">The shop has not sent any proofs. Owners upload them from Billing.</p>}
+        {waiting > 0 && <p className="border-t px-5 py-3 text-xs text-stone-500">Recording a payment above marks the waiting proofs as recorded.</p>}
       </div>
 
       <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">

@@ -6,18 +6,19 @@ project name, env file, ports, volumes and backups, so production and preprod ca
 | Service | Image | Purpose |
 |---|---|---|
 | `db` | `mariadb:11.4` (LTS) | Data. Not published to the host; only `app` and `backup` can reach it. |
+| `minio` | `pgsty/minio` (community build of MinIO) | S3 file storage: product photos and payment proofs. Only `app` uses the S3 API; the web console is on this PC only. |
 | `app` | built from `Dockerfile` | Next.js production build, non-root user. Runs DB migrations on start. |
 | `caddy` | `caddy:2.10-alpine` | HTTPS, HTTP→HTTPS redirect, compression, security headers. |
-| `backup` | `mariadb:11.4` | `mariadb-dump` on start and then daily into a host folder, with retention. |
+| `backup` | `mariadb:11.4` | `mariadb-dump` and an archive of the stored files, on start and then daily into a host folder, with retention. |
 | `mailpit` | `axllent/mailpit` | Optional local inbox (`COMPOSE_PROFILES=mailpit`) until a real mail provider is set up. |
 
 On this PC:
 
-| Environment | Address | Mail inbox (this PC only) | Backups |
-|---|---|---|---|
-| Production | https://localhost | http://localhost:8025 | `backups/production` |
-| Preprod | https://localhost:8443 | http://localhost:8026 | `backups/preprod` |
-| Dev | http://localhost:3000 | http://localhost:8027 | none |
+| Environment | Address | Mail inbox (this PC only) | File storage console (this PC only) | Backups |
+|---|---|---|---|---|
+| Production | https://localhost | http://localhost:8025 | http://localhost:9001 | `backups/production` |
+| Preprod | https://localhost:8443 | http://localhost:8026 | http://localhost:9011 | `backups/preprod` |
+| Dev | http://localhost:3000 | http://localhost:8027 | http://localhost:9021 | none |
 
 ## Accounts, shops and subscriptions
 
@@ -38,6 +39,13 @@ One install serves many shops. Each shop's data is kept apart from every other s
     people can still sign in and see everything, but changes are refused until it is renewed.
   - Owners see their plan, payment history and how to pay on **Billing**. The bank and wallet details
     shown there come from `SHOPOS_PAY_*` in the env file.
+  - Owners **send a payment proof** (screenshot or PDF, up to 5 MB, 10 a day) from Billing, even while
+    the shop is read-only. Waiting proofs are listed on the admin **Payments** page and on the shop's
+    page; recording a payment for the shop marks them as recorded.
+- **Product photos:** Inventory → add or edit a product → **Add photo** (JPG, PNG or WebP, up to 5 MB).
+  The photo shows in the product list and on the POS tiles.
+- **Files** (photos, proofs) are stored in MinIO and only served to signed-in people of the same shop
+  (proofs: the owner) and to the platform admin, through `/api/files/...`.
 - **Staff:** the owner invites people from **Staff** with their email and a role. The invitation link
   (valid 7 days) lets them choose a name and password.
   - **Manager:** everything except Staff, Billing and changing the shop profile.
@@ -61,6 +69,8 @@ Open it on this PC to click confirmation, reset and invitation links.
    - Address: `SHOPOS_DOMAIN`, `SHOPOS_PUBLIC_URL`, ports. Email links use `SHOPOS_PUBLIC_URL`, so it must
      be the address people actually open, including the port if it isn't 443.
    - Email: keep the Mailpit defaults until you have a provider (below).
+   - File storage: `SHOPOS_S3_ACCESS_KEY` / `SHOPOS_S3_SECRET_KEY` become MinIO's admin login when its
+     volume is first created; like the database passwords, keep them unchanged afterwards.
 2. Start it:
    ```
    docker compose -p shopos-prod --env-file .env.production up -d --build --wait
@@ -117,12 +127,21 @@ docker compose -p shopos-prod --env-file .env.production start app
 On Windows PowerShell, unzip the file first (for example with 7-Zip), then pipe it in with
 `Get-Content -Raw shopos-....sql | docker compose ... exec -T db ...`.
 
+Stored files are archived next to each dump as `shopos-files-YYYYMMDD-HHMMSS.tar.gz` (MinIO's data
+folder). Restore them from the same moment as the database dump, with MinIO stopped:
+```
+docker compose -p shopos-prod --env-file .env.production stop app minio
+docker run --rm -v shopos-prod_minio-data:/data -v "${PWD}/backups/production:/backups:ro" alpine sh -c 'rm -rf /data/* /data/.minio.sys && tar -xzf /backups/shopos-files-YYYYMMDD-HHMMSS.tar.gz -C /data'
+docker compose -p shopos-prod --env-file .env.production start minio app
+```
+
 Locked out (owner lost their password and email is not working)? Restore is not needed: set up email,
 then use **Forgot password**.
 
 ## Checks
 
-- Health (no sign-in needed): `<address>/api/health` returns `{"ok":true,"storage":"mariadb"}`.
+- Health (no sign-in needed): `<address>/api/health` returns `{"ok":true,"storage":"mariadb","files":"ok"}`.
+  `files` is `error` while MinIO is unreachable; sales keep working, only photos and proofs fail.
 - Status: `docker compose -p shopos-prod ps` — every service `healthy` or `running`.
 - Logs: `docker compose -p shopos-prod logs -f app` (rotated at 10 MB × 5 files per service).
 - Full end-to-end suite against a disposable copy of this stack: `.\scripts\e2e.ps1 -Target preprod`.

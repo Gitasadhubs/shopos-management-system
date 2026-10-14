@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise'
 import { getPool, iso, likePattern, LocalDataError, PLAN_PRICE_PKR, roundMoney, TRIAL_DAYS, withTransaction, type Queryable } from '@/lib/local-db'
+import { fileUrl } from '@/lib/file-keys'
 import { addDays, dayKey, dayStart, DEFAULT_TIMEZONE } from '@/lib/time'
 
 // Shops and their subscriptions. Shop owners read their own; platform admins (role 'admin') manage all.
@@ -16,6 +17,8 @@ export type ShopUpdate = Partial<ShopInput> & Partial<Omit<ShopReportSettings, '
 export type PaymentMethod = 'bank' | 'jazzcash' | 'easypaisa' | 'cash' | 'other'
 export type SubscriptionPayment = { id: string; shop_id: string; shop_name?: string; amount: number; method: string; reference: string | null; months: number; period_end: string; created_at: string }
 export type SubscriptionEvent = { id: string; event: string; detail: string | null; actor_name: string | null; created_at: string }
+// reviewed_at: when an admin recorded a payment after this proof arrived; null while waiting.
+export type PaymentProof = { id: string; shop_id: string; shop_name: string; url: string; content_type: string; size_bytes: number; note: string | null; uploaded_by_name: string | null; created_at: string; reviewed_at: string | null }
 
 const DAY = 86_400_000
 
@@ -122,13 +125,65 @@ function paymentFromRow(row: RowDataPacket): SubscriptionPayment {
   }
 }
 
+const PROOF_SELECT = `SELECT payment_proofs.*, shops.name AS shop_name, users.full_name AS uploaded_by_name
+  FROM payment_proofs JOIN shops ON shops.id = payment_proofs.shop_id LEFT JOIN users ON users.id = payment_proofs.uploaded_by`
+
+function proofFromRow(row: RowDataPacket): PaymentProof {
+  return {
+    id: row.id,
+    shop_id: row.shop_id,
+    shop_name: row.shop_name,
+    url: fileUrl(row.object_key),
+    content_type: row.content_type,
+    size_bytes: Number(row.size_bytes),
+    note: row.note,
+    uploaded_by_name: row.uploaded_by_name ?? null,
+    created_at: iso(row.created_at),
+    reviewed_at: row.reviewed_at ? iso(row.reviewed_at) : null,
+  }
+}
+
+async function listShopProofs(shopId: string, limit: number) {
+  const [rows] = await (await getPool()).query<RowDataPacket[]>(`${PROOF_SELECT} WHERE payment_proofs.shop_id = ? ORDER BY payment_proofs.created_at DESC LIMIT ?`, [shopId, limit])
+  return rows.map(proofFromRow)
+}
+
 // What a shop owner sees on the Billing page.
 export async function getBilling(shopId: string) {
   const pool = await getPool()
   const shop = await getShop(shopId)
   if (!shop) throw new LocalDataError('Shop not found.', 404)
   const [payments] = await pool.query<RowDataPacket[]>('SELECT * FROM subscription_payments WHERE shop_id = ? ORDER BY created_at DESC LIMIT 24', [shopId])
-  return { shop, payments: payments.map(paymentFromRow) }
+  return { shop, payments: payments.map(paymentFromRow), proofs: await listShopProofs(shopId, 10) }
+}
+
+// Enough for real payments, too few to use the bucket as free file hosting.
+export const PROOFS_PER_DAY = 10
+
+export async function assertProofAllowance(shopId: string) {
+  const [[recent]] = await (await getPool()).query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM payment_proofs WHERE shop_id = ? AND created_at >= ?', [shopId, new Date(Date.now() - DAY)])
+  if (Number(recent.n) >= PROOFS_PER_DAY) throw new LocalDataError(`At most ${PROOFS_PER_DAY} proofs a day. Message us on WhatsApp if you need to send more.`, 429)
+}
+
+// The owner sends a screenshot of a payment (already stored at key); the platform admin checks it
+// and records the payment.
+export async function addPaymentProof(actorId: string, shopId: string, file: { key: string; type: string; size: number }, note: string | null) {
+  const id = randomUUID()
+  await withTransaction(async (connection) => {
+    await connection.query(
+      'INSERT INTO payment_proofs (id, shop_id, object_key, content_type, size_bytes, note, uploaded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, shopId, file.key, file.type, file.size, note?.trim() || null, actorId, new Date()],
+    )
+    await logEvent(connection, shopId, 'proof_sent', note?.trim() || null, actorId)
+  })
+  const [rows] = await (await getPool()).query<RowDataPacket[]>(`${PROOF_SELECT} WHERE payment_proofs.id = ?`, [id])
+  return proofFromRow(rows[0])
+}
+
+// Proofs no admin has acted on yet, oldest first.
+export async function listPendingPaymentProofs(limit = 50) {
+  const [rows] = await (await getPool()).query<RowDataPacket[]>(`${PROOF_SELECT} WHERE payment_proofs.reviewed_at IS NULL ORDER BY payment_proofs.created_at LIMIT ?`, [limit])
+  return rows.map(proofFromRow)
 }
 
 // --- platform admin --------------------------------------------------------------------------
@@ -226,6 +281,7 @@ export async function getShopForAdmin(shopId: string) {
     users: users.map((row) => ({ id: row.id as string, email: row.email as string, full_name: row.full_name as string, role: row.role as string, is_active: Boolean(row.is_active), email_verified: Boolean(row.email_verified_at), last_login_at: row.last_login_at ? iso(row.last_login_at) : null, created_at: iso(row.created_at) })),
     usage: { products: Number(usage.products), customers: Number(usage.customers), sales: Number(usage.sales), revenue_30d: roundMoney(Number(usage.revenue_30d)), last_sale_at: usage.last_sale_at ? iso(usage.last_sale_at) : null },
     payments: payments.map(paymentFromRow),
+    proofs: await listShopProofs(shopId, 20),
     events: events.map((row): SubscriptionEvent => ({ id: row.id, event: row.event, detail: row.detail, actor_name: row.actor_name, created_at: iso(row.created_at) })),
   }
 }
@@ -259,6 +315,8 @@ export async function recordSubscriptionPayment(actorId: string, shopId: string,
       'INSERT INTO subscription_payments (id, shop_id, amount, method, reference, months, period_end, recorded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [randomUUID(), shopId, roundMoney(input.amount), input.method, input.reference?.trim() || null, input.months, periodEnd, actorId, now],
     )
+    // The proofs sent so far are what this payment answers.
+    await connection.query('UPDATE payment_proofs SET reviewed_at = ? WHERE shop_id = ? AND reviewed_at IS NULL', [now, shopId])
     await logEvent(connection, shopId, 'payment', `₨${roundMoney(input.amount).toLocaleString('en-PK')} via ${input.method} · ${input.months} month${input.months === 1 ? '' : 's'} · paid until ${formatDay(periodEnd)}`, actorId)
   })
 }

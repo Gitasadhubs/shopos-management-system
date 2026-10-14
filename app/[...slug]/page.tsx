@@ -2,9 +2,9 @@ import { notFound } from 'next/navigation'
 import { AppRoot } from '@/components/app-root'
 
 // Screens rendered by ShopOSApp; anything else would silently show the dashboard.
-const appRoutes = new Set(['dashboard', 'inventory', 'account', 'customers', 'suppliers', 'purchases', 'reports', 'expenses', 'day-end'])
+const appRoutes = new Set(['dashboard', 'inventory', 'sales', 'account', 'customers', 'suppliers', 'purchases', 'reports', 'expenses', 'day-end'])
 // Backed by MariaDB storage only; Supabase accounts and data are managed elsewhere.
-const selfHostedOnly = new Set(['account', 'customers', 'suppliers', 'purchases', 'reports', 'expenses', 'day-end'])
+const selfHostedOnly = new Set(['sales', 'account', 'customers', 'suppliers', 'purchases', 'reports', 'expenses', 'day-end'])
 
 export default async function ShopOSRoute({ params }: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await params

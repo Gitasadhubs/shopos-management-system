@@ -131,7 +131,7 @@ test('day-end page: drawer count, WhatsApp share and settings', async ({ browser
   await page.getByRole('link', { name: 'Close the day' }).click()
   await expect(page).toHaveURL(/\/day-end$/)
   await expect(page.getByLabel('Net profit ₨ 150')).toBeVisible()
-  await expect(page.getByText('Expected in drawer').locator('..')).toContainText('₨ 300')
+  await expect(page.getByText('Expected in drawer', { exact: true }).locator('..')).toContainText('₨ 300')
   await page.getByLabel('Cash you counted (optional)').fill('280')
   await expect(page.getByRole('note')).toHaveText('Short by ₨ 20')
   await page.getByLabel('Cash you counted (optional)').fill('300')
@@ -144,7 +144,7 @@ test('day-end page: drawer count, WhatsApp share and settings', async ({ browser
   await page.getByRole('button', { name: 'Previous day' }).click()
   await expect(page.getByText('Nothing sold on this day.')).toBeVisible()
   await page.getByRole('button', { name: 'Today' }).click()
-  await expect(page.getByText('Drawer Tea')).toBeVisible()
+  await expect(page.getByText('Drawer Tea', { exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'Send now' }).click()
   await expect(page.getByRole('status')).toContainText(`Report sent to ${shop.email}`)

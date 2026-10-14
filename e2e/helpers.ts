@@ -11,6 +11,7 @@ export type Product = {
   cost_price: number
   stock_quantity: number
   reorder_level: number
+  image_url: string | null
 }
 
 export const isPreprod = process.env.E2E_TARGET === 'preprod'

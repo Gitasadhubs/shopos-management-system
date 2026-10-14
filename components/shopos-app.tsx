@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { ArrowUpRight, BarChart3, BookUser, Boxes, CalendarCheck, CreditCard, LayoutDashboard, LogOut, Menu, PackagePlus, RotateCcw, Settings, ShoppingCart, Store, Truck, UserPlus, UserRound, Users, Volume2, VolumeX, Wallet, WalletCards, X } from 'lucide-react'
+import { ArrowUpRight, BarChart3, BookUser, Boxes, CalendarCheck, CreditCard, LayoutDashboard, LogOut, Menu, PackagePlus, ReceiptText, RotateCcw, Settings, ShoppingCart, Store, Truck, UserPlus, UserRound, Users, Volume2, VolumeX, Wallet, WalletCards, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -22,6 +22,8 @@ import SettingsPage from '@/components/settings-page'
 import BillingPage from '@/components/billing-page'
 import ExpensesPage from '@/components/expenses-page'
 import DayEndPage from '@/components/day-end-page'
+import SalesPage from '@/components/sales-page'
+import { receiptLabel, ReturnBadge } from '@/components/receipt'
 import { EmptyState, ReceiptIllustration, StorefrontIllustration } from '@/components/illustrations'
 import { Avatar, money, StatCard } from '@/components/page-kit'
 
@@ -31,6 +33,7 @@ type NavItem = { href: string; label: string; permission: Permission; icon: type
 const navigation: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', permission: 'dashboard', icon: LayoutDashboard, group: 'Workspace' },
   { href: '/pos', label: 'POS', permission: 'pos', icon: ShoppingCart, group: 'Workspace' },
+  { href: '/sales', label: 'Sales', permission: 'pos', icon: ReceiptText, group: 'Workspace', selfHostedOnly: true },
   { href: '/inventory', label: 'Inventory', permission: 'inventory', icon: Boxes, group: 'Workspace' },
   { href: '/customers', label: 'Customers', permission: 'customers', icon: BookUser, group: 'Workspace', selfHostedOnly: true },
   { href: '/suppliers', label: 'Suppliers', permission: 'suppliers', icon: Truck, group: 'Workspace', selfHostedOnly: true },
@@ -48,11 +51,12 @@ type Subscription = { state: 'trialing' | 'active' | 'suspended' | 'expired'; da
 
 type SaleRow = {
   id: string
+  number?: number
   total: number
   payment_method: string
   created_at: string
   customer_name?: string | null
-  items?: Array<{ product_name: string; quantity: number }>
+  items?: Array<{ product_name: string; quantity: number; subtotal: number; returned_quantity?: number }>
   customers?: { name?: string | null } | null
 }
 
@@ -68,6 +72,7 @@ type DashboardData = {
   creditCustomers?: number
   target?: number | null
   expensesToday?: number
+  returnsToday?: number
   checklist?: Record<'products' | 'sale' | 'customers' | 'staff' | 'profile' | 'dayEnd', boolean>
 }
 
@@ -136,7 +141,7 @@ function AppSidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const links = navigation.filter((item) => can(role?.role, item.permission) && (selfHosted || !item.selfHostedOnly))
   const groups = (['Workspace', 'Manage'] as const).map((group) => ({ group, items: links.filter((item) => item.group === group) })).filter(({ items }) => items.length)
 
-  return <aside className={`${open ? 'fixed inset-y-0 left-0 z-50 flex' : 'hidden'} w-64 shrink-0 flex-col border-r bg-white shadow-sm lg:fixed lg:flex`}>
+  return <aside className={`${open ? 'fixed inset-y-0 left-0 z-50 flex' : 'hidden'} w-64 shrink-0 flex-col border-r bg-white shadow-sm lg:fixed lg:inset-y-0 lg:left-0 lg:flex`}>
     <div className="flex h-20 items-center gap-3 border-b px-6">
       <div className="flex size-10 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-700 text-white shadow-md shadow-emerald-600/30"><Store /></div>
       <div className="min-w-0"><div className="text-lg font-bold">Shop<span className="text-emerald-600">OS</span></div><div className="truncate text-[11px] text-muted-foreground">{shop?.name ?? 'Shop management'}</div></div>
@@ -263,9 +268,10 @@ function Dashboard() {
       <div className="absolute inset-0 shopos-dots" />
       <div className="relative flex flex-col gap-6 p-6 sm:flex-row sm:items-center sm:p-8">
         <div className="flex-1">
-          <p className="text-sm font-medium text-emerald-100">{new Date().toLocaleDateString('en-PK', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+          {/* The server renders in UTC and the browser in local time, so date and greeting can differ. */}
+          <p className="text-sm font-medium text-emerald-100" suppressHydrationWarning>{new Date().toLocaleDateString('en-PK', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
           <h2 className="mt-1 text-2xl font-bold sm:text-3xl">Dashboard</h2>
-          <p className="mt-1 text-emerald-50">{greeting()}{firstName ? `, ${firstName}` : ''}! Here is today&apos;s activity{shop?.name ? ` at ${shop.name}` : ''}.</p>
+          <p className="mt-1 text-emerald-50" suppressHydrationWarning>{greeting()}{firstName ? `, ${firstName}` : ''}! Here is today&apos;s activity{shop?.name ? ` at ${shop.name}` : ''}.</p>
           <div className="mt-5 flex flex-wrap gap-2">
             <Button variant="outline" className="border-white/30 bg-white/10 text-white hover:bg-white/20 hover:text-white" onClick={() => { playSound('tap'); setRefreshKey((value) => value + 1) }}><RotateCcw data-icon="inline-start" />Refresh</Button>
             <Link href="/pos" className="inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-white px-4 text-sm font-semibold text-emerald-800 shadow-sm transition hover:bg-emerald-50"><ShoppingCart className="size-4" />New sale</Link>
@@ -279,7 +285,7 @@ function Dashboard() {
     {error && <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700"><span>{error}</span><Button size="sm" variant="outline" onClick={() => setRefreshKey((value) => value + 1)}>Retry</Button></div>}
     {role?.role === 'owner' && data?.checklist && shop?.id && <GettingStarted checklist={data.checklist} shopId={shop.id} />}
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <StatCard title="Sales today" value={dashboard.sales} format={money} loading={loading} note={`${dashboard.salesCount} completed sale${dashboard.salesCount === 1 ? '' : 's'}`} icon={CreditCard} tone="emerald" />
+      <StatCard title="Sales today" value={dashboard.sales} format={money} loading={loading} note={`${dashboard.salesCount} completed sale${dashboard.salesCount === 1 ? '' : 's'}${data?.returnsToday ? ` · ${money(data.returnsToday)} returned` : ''}`} icon={CreditCard} tone="emerald" />
       <StatCard title="Gross profit today" value={dashboard.profit} format={money} loading={loading} note="Based on saved sale item costs" icon={WalletCards} tone="violet" delay={60} />
       <StatCard title="Low stock" value={dashboard.lowStock} loading={loading} note="At or below reorder level" icon={Boxes} tone="amber" delay={120} />
       <StatCard title="Transactions" value={dashboard.salesCount} loading={loading} note="Completed today" icon={BarChart3} tone="sky" delay={180} />
@@ -315,7 +321,7 @@ function Dashboard() {
       <Card className="shopos-rise">
         <CardHeader className="flex flex-row items-center justify-between"><div><CardTitle className="text-base">Recent sales</CardTitle><p className="mt-1 text-xs text-muted-foreground">Completed today</p></div><Link href="/pos" className="text-sm font-medium text-emerald-700">Open POS <ArrowUpRight className="ml-1 inline size-4" /></Link></CardHeader>
         <CardContent>
-          {loading ? <p className="py-8 text-center text-sm text-muted-foreground">Loading sales…</p> : dashboard.recent.length ? <Table><TableHeader><TableRow><TableHead>Receipt</TableHead><TableHead>Items</TableHead><TableHead>Payment</TableHead><TableHead>Amount</TableHead></TableRow></TableHeader><TableBody>{dashboard.recent.map((sale) => <TableRow key={sale.id}><TableCell className="font-medium">{sale.id.slice(0, 8)}</TableCell><TableCell>{sale.items?.map((item) => `${item.product_name} × ${item.quantity}`).join(', ') || sale.customers?.name || 'Sale'}{sale.customer_name && <span className="block text-xs text-muted-foreground">{sale.customer_name}</span>}</TableCell><TableCell><Badge variant="secondary" className={`capitalize ${sale.payment_method === 'credit' ? 'bg-amber-100 text-amber-800' : sale.payment_method === 'card' ? 'bg-sky-100 text-sky-800' : 'bg-emerald-100 text-emerald-800'}`}>{sale.payment_method}</Badge></TableCell><TableCell className="font-semibold">{money(sale.total)}</TableCell></TableRow>)}</TableBody></Table> : <EmptyState illustration={ReceiptIllustration} title="No sales recorded today.">Your first sale of the day will appear here.</EmptyState>}
+          {loading ? <p className="py-8 text-center text-sm text-muted-foreground">Loading sales…</p> : dashboard.recent.length ? <Table><TableHeader><TableRow><TableHead>Receipt</TableHead><TableHead>Items</TableHead><TableHead>Payment</TableHead><TableHead>Amount</TableHead></TableRow></TableHeader><TableBody>{dashboard.recent.map((sale) => <TableRow key={sale.id}><TableCell className="font-medium">{receiptLabel(sale)}{sale.items && <ReturnBadge sale={{ items: sale.items }} />}</TableCell><TableCell>{sale.items?.map((item) => `${item.product_name} × ${item.quantity}`).join(', ') || sale.customers?.name || 'Sale'}{sale.customer_name && <span className="block text-xs text-muted-foreground">{sale.customer_name}</span>}</TableCell><TableCell><Badge variant="secondary" className={`capitalize ${sale.payment_method === 'credit' ? 'bg-amber-100 text-amber-800' : sale.payment_method === 'card' ? 'bg-sky-100 text-sky-800' : 'bg-emerald-100 text-emerald-800'}`}>{sale.payment_method}</Badge></TableCell><TableCell className="font-semibold">{money(sale.total)}</TableCell></TableRow>)}</TableBody></Table> : <EmptyState illustration={ReceiptIllustration} title="No sales recorded today.">Your first sale of the day will appear here.</EmptyState>}
         </CardContent>
       </Card>
       <Card className="shopos-rise">
@@ -331,6 +337,7 @@ function Dashboard() {
 function pageFor(pathname: string) {
   switch (pathname) {
     case '/inventory': return <LocalInventory />
+    case '/sales': return <SalesPage />
     case '/customers': return <CustomersPage />
     case '/suppliers': return <SuppliersPage />
     case '/purchases': return <PurchasesPage />

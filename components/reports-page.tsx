@@ -17,7 +17,7 @@ import { addDays, dayKey, DEFAULT_TIMEZONE } from '@/lib/time'
 type Report = {
   from: string
   to: string
-  totals: { revenue: number; cogs: number; profit: number; margin: number; count: number; average: number; discounts: number; creditGiven: number; purchases: number; purchaseCount: number; payables: number }
+  totals: { revenue: number; cogs: number; profit: number; margin: number; count: number; average: number; discounts: number; returns: number; returnCount: number; creditGiven: number; purchases: number; purchaseCount: number; payables: number }
   daily: Array<{ day: string; revenue: number; profit: number; count: number }>
   methods: Array<{ method: string; total: number; count: number }>
   topProducts: Array<{ product_id: string; name: string; quantity: number; revenue: number; profit: number }>
@@ -46,7 +46,7 @@ function downloadCsv(report: Report) {
   const rows: Array<Array<string | number>> = [
     ['ShopOS report', `${report.from} to ${report.to}`],
     [],
-    ['Revenue', report.totals.revenue], ['Cost of goods', report.totals.cogs], ['Gross profit', report.totals.profit], ['Margin %', report.totals.margin], ['Sales', report.totals.count], ['Average sale', report.totals.average], ['Discounts', report.totals.discounts], ['Credit given', report.totals.creditGiven], ['Purchases', report.totals.purchases],
+    ['Revenue', report.totals.revenue], ['Cost of goods', report.totals.cogs], ['Gross profit', report.totals.profit], ['Margin %', report.totals.margin], ['Sales', report.totals.count], ['Average sale', report.totals.average], ['Discounts', report.totals.discounts], ['Returns (refunded)', report.totals.returns], ['Credit given', report.totals.creditGiven], ['Purchases', report.totals.purchases],
     [],
     ['Day', 'Revenue', 'Profit', 'Sales'],
     ...report.daily.map((day) => [day.day, day.revenue, day.profit, day.count]),
@@ -96,7 +96,7 @@ export default function ReportsPage() {
       {report.error && <Notice tone="error" action={<Button size="sm" variant="outline" onClick={() => void report.reload()}>Retry</Button>}>{report.error}</Notice>}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard title="Revenue" value={data?.totals.revenue ?? 0} format={money} loading={loading} note={`${data?.totals.count ?? 0} sales · avg ${money(data?.totals.average ?? 0)}`} icon={Banknote} tone="emerald" />
+        <StatCard title="Revenue" value={data?.totals.revenue ?? 0} format={money} loading={loading} note={`${data?.totals.count ?? 0} sales · avg ${money(data?.totals.average ?? 0)}${data?.totals.returns ? ` · after ${money(data.totals.returns)} returns` : ''}`} icon={Banknote} tone="emerald" />
         <StatCard title="Gross profit" value={data?.totals.profit ?? 0} format={money} loading={loading} note={`${data?.totals.margin ?? 0}% margin`} icon={TrendingUp} tone="violet" delay={60} />
         <StatCard title="Cost of goods" value={data?.totals.cogs ?? 0} format={money} loading={loading} note={`Discounts ${money(data?.totals.discounts ?? 0)}`} icon={Calculator} tone="sky" delay={120} />
         <StatCard title="Purchases" value={data?.totals.purchases ?? 0} format={money} loading={loading} note={`${data?.totals.purchaseCount ?? 0} received · you owe ${money(data?.totals.payables ?? 0)}`} icon={PackagePlus} tone="amber" delay={180} />

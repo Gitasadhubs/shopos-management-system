@@ -1,7 +1,9 @@
 #!/bin/sh
 # Runs in the "backup" service (mariadb image). Dumps the database on start and then every
-# BACKUP_INTERVAL_SECONDS, keeping BACKUP_KEEP_DAYS of compressed dumps in /backups.
+# BACKUP_INTERVAL_SECONDS, keeping BACKUP_KEEP_DAYS of compressed dumps in /backups. Stored files
+# (MinIO's data folder, mounted read-only at /minio-data) are archived alongside each dump.
 # Restore: gunzip -c shopos-<stamp>.sql.gz | docker compose exec -T db sh -c 'mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'
+# Files: see "Backups and restore" in DEPLOYMENT.md.
 set -eu
 
 interval="${BACKUP_INTERVAL_SECONDS:-86400}"
@@ -18,6 +20,16 @@ while true; do
     rm -f "$target.partial"
     echo "backup: FAILED at $stamp" >&2
   fi
-  find /backups -name 'shopos-*.sql.gz' -mtime +"$keep_days" -delete
+  if [ -d /minio-data ]; then
+    files="/backups/shopos-files-$stamp.tar.gz"
+    if tar -czf "$files.partial" -C /minio-data .; then
+      mv "$files.partial" "$files"
+      echo "backup: wrote $files ($(du -h "$files" | cut -f1))"
+    else
+      rm -f "$files.partial"
+      echo "backup: files FAILED at $stamp" >&2
+    fi
+  fi
+  find /backups \( -name 'shopos-*.sql.gz' -o -name 'shopos-files-*.tar.gz' \) -mtime +"$keep_days" -delete
   sleep "$interval"
 done

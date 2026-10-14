@@ -1,17 +1,84 @@
 'use client'
 
-import { Check, Landmark, MessageCircle, Smartphone } from 'lucide-react'
+import { useState } from 'react'
+import { Check, FileText, Landmark, LoaderCircle, MessageCircle, Smartphone, Upload } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { RocketIllustration } from '@/components/illustrations'
-import { money, Notice, shortDate, SkeletonRows, useApi } from '@/components/page-kit'
+import { dateTime, money, Notice, shortDate, SkeletonRows, useApi } from '@/components/page-kit'
+import { playSound } from '@/lib/sounds'
 
 // The owner's view of their ShopOS subscription. Payments are recorded by the ShopOS team (admin panel).
 
+type Proof = { id: string; url: string; content_type: string; note: string | null; created_at: string; reviewed_at: string | null }
 type Billing = {
   shop: { id: string; name: string; subscription: { plan: string; state: 'trialing' | 'active' | 'suspended' | 'expired'; price_pkr: number; current_period_end: string; days_left: number } }
   payments: Array<{ id: string; amount: number; method: string; reference: string | null; months: number; period_end: string; created_at: string }>
+  proofs: Proof[]
   payment_details: { bank_name: string; account_title: string; account_number: string; iban: string; wallet: string; whatsapp: string }
+}
+
+// Upload a screenshot of the payment so the ShopOS team can match it and activate the shop.
+function PaymentProofCard({ proofs, onSent }: { proofs: Proof[]; onSent: () => void }) {
+  const [file, setFile] = useState<File | null>(null)
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [sent, setSent] = useState(false)
+  const [inputKey, setInputKey] = useState(0)
+
+  async function send(event: React.FormEvent) {
+    event.preventDefault()
+    if (!file) return
+    setBusy(true)
+    setError('')
+    setSent(false)
+    try {
+      const data = new FormData()
+      data.append('file', file)
+      data.append('note', note)
+      const response = await fetch('/api/billing/proofs', { method: 'POST', body: data })
+      const body = await response.json().catch(() => ({ error: 'Could not send the proof.' }))
+      if (!response.ok) throw new Error(body.error ?? 'Could not send the proof.')
+      playSound('success')
+      setSent(true)
+      setFile(null)
+      setNote('')
+      setInputKey((key) => key + 1)
+      onSent()
+    } catch (sendError) {
+      playSound('error')
+      setError(sendError instanceof Error ? sendError.message : 'Could not send the proof.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card className="mt-6 shopos-rise">
+      <CardHeader><CardTitle className="text-base">Send payment proof</CardTitle><p className="text-xs text-muted-foreground">Upload the screenshot or receipt of your transfer. We check it and activate your plan.</p></CardHeader>
+      <CardContent className="grid gap-6 lg:grid-cols-2">
+        <form onSubmit={send} className="grid gap-3">
+          <div><Label htmlFor="proof-file">Screenshot or PDF</Label><Input key={inputKey} id="proof-file" className="mt-1.5" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" required onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><p className="mt-1 text-xs text-muted-foreground">JPG, PNG, WebP or PDF, up to 5 MB.</p></div>
+          <div><Label htmlFor="proof-note">Note (optional)</Label><Input id="proof-note" className="mt-1.5" maxLength={300} value={note} onChange={(event) => setNote(event.target.value)} placeholder="e.g. 3 months via JazzCash, TID 12345" /></div>
+          {error && <p role="alert" className="text-sm text-rose-600">{error}</p>}
+          {sent && <p role="status" className="text-sm text-emerald-700">Proof sent. We will activate your plan once we confirm it.</p>}
+          <Button type="submit" disabled={busy || !file} className="bg-emerald-600 hover:bg-emerald-700">{busy ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : <Upload className="mr-2 size-4" />}{busy ? 'Sending…' : 'Send proof'}</Button>
+        </form>
+        <div>
+          <p className="text-sm font-semibold">Sent proofs</p>
+          {proofs.length ? <ul className="mt-2 divide-y rounded-xl border">{proofs.map((proof) => <li key={proof.id} className="flex items-center gap-3 p-3 text-sm">
+            <a href={proof.url} target="_blank" rel="noreferrer" className="shrink-0">{proof.content_type.startsWith('image/') ? <img src={proof.url} alt="Payment proof" className="size-12 rounded-lg border object-cover" /> : <span className="flex size-12 items-center justify-center rounded-lg border bg-stone-50"><FileText className="size-5 text-stone-500" /></span>}</a>
+            <div className="min-w-0 flex-1"><p className="truncate">{proof.note || 'No note'}</p><p className="text-xs text-muted-foreground">{dateTime(proof.created_at)}</p></div>
+            <Badge variant="secondary" className={proof.reviewed_at ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}>{proof.reviewed_at ? 'Confirmed' : 'Waiting'}</Badge>
+          </li>)}</ul> : <p className="mt-2 text-sm text-muted-foreground">None yet.</p>}
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 const FEATURES = ['Fast counter sales with receipts', 'Stock, purchases and suppliers', 'Customer khata with WhatsApp reminders', 'Profit reports and CSV export', 'Staff accounts with roles', 'Works offline at the till']
@@ -66,6 +133,8 @@ export default function BillingPage() {
           </CardContent>
         </Card>
       </div>
+
+      <PaymentProofCard proofs={data.proofs} onSent={() => void billing.reload()} />
 
       <Card className="mt-6 shopos-rise">
         <CardHeader><CardTitle className="text-base">Payment history</CardTitle></CardHeader>

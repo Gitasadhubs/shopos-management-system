@@ -19,11 +19,15 @@ $exitCode = 1
 if ($LASTEXITCODE -ne 0) { throw 'Could not build the Playwright image.' }
 
 if ($Target -eq 'dev') {
-  $services = @('mariadb-test', 'mailpit-test', 'shopos-test')
+  $services = @('mariadb-test', 'mailpit-test', 'minio-test', 'shopos-test')
   try {
     # Fresh anonymous volumes, so node_modules always matches the image built from package.json.
     & docker @dev up -d --build --wait --force-recreate --renew-anon-volumes @services
     if ($LASTEXITCODE -ne 0) { throw 'Could not start the dev test server.' }
+    # next dev compiles each route on first request; on a busy machine the first-run pages alone can
+    # outlast a test's timeout. Compile them before the clock starts (GETs only; nothing is created).
+    $warm = "for (const path of ['/setup', '/login', '/signup', '/verify-email', '/api/auth/setup', '/api/auth/me']) { const started = Date.now(); await fetch('http://shopos-test:3000' + path, { redirect: 'manual', signal: AbortSignal.timeout(300000) }).catch(() => {}); console.log('warm', path, Date.now() - started, 'ms') }"
+    & docker @dev run --rm --no-deps playwright node --input-type=module -e $warm
     & docker @dev run --rm --no-deps playwright npx playwright test @PlaywrightArgs
     $exitCode = $LASTEXITCODE
   } finally {

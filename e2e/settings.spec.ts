@@ -13,7 +13,7 @@ test('the owner updates the shop profile; it shows in the app and on receipts', 
 
   await page.goto('/settings')
   await expect(page.getByLabel('Shop name')).toHaveValue(shop.shopName)
-  await expect(page.getByLabel('Time zone')).toHaveValue('Asia/Karachi')
+  await expect(page.getByLabel('Time zone', { exact: true })).toHaveValue('Asia/Karachi')
   await page.getByLabel('Shop name').fill(newName)
   await page.getByLabel('Address').fill('12 Mall Road, Lahore')
   await page.getByLabel('Receipt message').fill('Shukriya! Come again.')

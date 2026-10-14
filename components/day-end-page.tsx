@@ -17,6 +17,7 @@ import { addDays, dayKey, DEFAULT_TIMEZONE } from '@/lib/time'
 type DayEnd = {
   day: string
   sales: { revenue: number; count: number; average: number; discounts: number; cogs: number }
+  returns: { total: number; count: number; cash: number }
   vsYesterday: number | null
   methods: { cash: number; card: number; credit: number }
   grossProfit: number
@@ -125,6 +126,7 @@ export default function DayEndPage() {
                 <div><p className="text-xs text-muted-foreground">Khata given</p><p className="font-semibold tabular-nums text-amber-700">{money(report.khata.given)}</p></div>
                 <div><p className="text-xs text-muted-foreground">Khata received</p><p className="font-semibold tabular-nums text-emerald-700">{money(report.khata.received)}</p></div>
               </div>
+              {report.returns.count > 0 && <Link href="/sales" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800 hover:bg-rose-100">{report.returns.count} return{report.returns.count === 1 ? '' : 's'} · {money(report.returns.total)} refunded (already taken off the figures above)</Link>}
             </CardContent>
           </Card>
 
@@ -132,7 +134,7 @@ export default function DayEndPage() {
             <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Vault className="size-4 text-emerald-600" />Cash drawer</CardTitle><p className="text-xs text-muted-foreground">Assumes everything except card payments was cash.</p></CardHeader>
             <CardContent className="grid gap-2 text-sm">
               <div className="flex justify-between"><span className="text-muted-foreground">Cash in (sales + khata received)</span><span className="tabular-nums">{money(report.cash.in)}</span></div>
-              <div className="flex justify-between"><span className="text-muted-foreground">Cash out (expenses + suppliers)</span><span className="tabular-nums">−{money(report.cash.out)}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Cash out (expenses + suppliers{report.returns.cash ? ' + refunds' : ''})</span><span className="tabular-nums">−{money(report.cash.out)}</span></div>
               <div className="flex justify-between border-t pt-2 text-base font-bold"><span>Expected in drawer</span><span className="tabular-nums">{money(report.cash.expected)}</span></div>
               <div className="mt-2"><Label htmlFor="cash-counted" className="text-xs">Cash you counted (optional)</Label><Input id="cash-counted" type="number" min="0" step="1" className="mt-1" placeholder={String(report.cash.expected)} value={counted} onChange={(event) => setCounted(event.target.value)} /></div>
               {difference !== null && <p role="note" className={`rounded-lg px-3 py-2 font-semibold shopos-pop ${difference === 0 ? 'bg-emerald-50 text-emerald-800' : difference > 0 ? 'bg-sky-50 text-sky-800' : 'bg-rose-50 text-rose-700'}`}>{difference === 0 ? 'Drawer matches exactly. 👍' : difference > 0 ? `Over by ${money(difference)}` : `Short by ${money(-difference)}`}</p>}

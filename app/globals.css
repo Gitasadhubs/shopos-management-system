@@ -215,6 +215,8 @@ button:not([aria-label="Close navigation"]) { min-height: 48px; }
   body * { visibility: hidden !important; }
   .print-receipt, .print-receipt * { visibility: visible !important; }
   .print-receipt { position: fixed; inset: 0 auto auto 0; width: 80mm; box-shadow: none !important; border: 0 !important; }
+  /* A transformed dialog would otherwise anchor the receipt to itself instead of the page. */
+  [data-slot="dialog-content"]:has(.print-receipt) { transform: none !important; animation: none !important; }
   .no-print { display: none !important; }
 }
 
