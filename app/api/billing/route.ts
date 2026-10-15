@@ -6,16 +6,17 @@ import { can } from '@/lib/permissions'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// Where shops send subscription payments. Set SHOPOS_PAY_* in the env file; unset or empty uses these defaults.
+// Where shops send subscription payments: SHOPOS_PAY_* in the env file. No defaults, so a shop is
+// never shown an account that is not yours; anything unset is left off the Billing page.
 function paymentDetails() {
-  const value = (name: string, fallback: string) => process.env[name] || fallback
+  const value = (name: string) => process.env[name]?.trim() || ''
   return {
-    bank_name: value('SHOPOS_PAY_BANK_NAME', 'Meezan Bank'),
-    account_title: value('SHOPOS_PAY_ACCOUNT_TITLE', 'ShopOS Technologies'),
-    account_number: value('SHOPOS_PAY_ACCOUNT_NUMBER', '0123-4567890123'),
-    iban: value('SHOPOS_PAY_IBAN', 'PK00MEZN0001234567890123'),
-    wallet: value('SHOPOS_PAY_WALLET', '03044463268'),
-    whatsapp: value('SHOPOS_PAY_WHATSAPP', '923044463268'),
+    bank_name: value('SHOPOS_PAY_BANK_NAME'),
+    account_title: value('SHOPOS_PAY_ACCOUNT_TITLE'),
+    account_number: value('SHOPOS_PAY_ACCOUNT_NUMBER'),
+    iban: value('SHOPOS_PAY_IBAN'),
+    wallet: value('SHOPOS_PAY_WALLET'),
+    whatsapp: value('SHOPOS_PAY_WHATSAPP'),
   }
 }
 

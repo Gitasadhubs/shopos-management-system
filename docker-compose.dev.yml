@@ -151,6 +151,13 @@ services:
       SHOPOS_MAIL_FROM: ShopOS Test <test@shopos.local>
       # The suite signs up many shops from one container.
       SHOPOS_SIGNUP_LIMIT: 1000
+      # Sample payment details for the Billing page (clearly not a real account).
+      SHOPOS_PAY_BANK_NAME: Meezan Bank
+      SHOPOS_PAY_ACCOUNT_TITLE: ShopOS Test
+      SHOPOS_PAY_ACCOUNT_NUMBER: 0000-1111222233
+      SHOPOS_PAY_IBAN: PK00TEST0000111122223333
+      SHOPOS_PAY_WALLET: "03000000000"
+      SHOPOS_PAY_WHATSAPP: "923000000000"
       SHOPOS_DB_PORT: 3306
       SHOPOS_DB_NAME: shopos
       SHOPOS_DB_USER: shopos

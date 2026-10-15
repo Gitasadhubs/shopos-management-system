@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { createProduct, defaultShopId, getProducts, updateProduct } from '@/lib/db'
 import { createClient } from '@/lib/supabase/server'
-import { getLocalProduct, insertLocalProduct, listLocalProducts, LocalDataError, removeLocalProduct, updateLocalProduct } from '@/lib/local-db'
+import { getLocalProduct, insertLocalProduct, listLocalProducts, LocalDataError, productPhotoInUse, removeLocalProduct, updateLocalProduct } from '@/lib/local-db'
 import { isSelfHosted, jsonResponse, parseBody, withShop } from '@/lib/local-session'
 import { keyFromUrl } from '@/lib/file-keys'
 import { deleteFile } from '@/lib/storage'
@@ -97,9 +97,9 @@ export async function PUT(request: Request) {
       const previous = await getLocalProduct(shop.id, id)
       const updated = await updateLocalProduct(shop.id, id, product)
       if (!updated) return jsonResponse(null, 'Product not found.', 404)
-      // A replaced or removed photo is no longer used anywhere.
+      // A replaced or removed photo is deleted once no other product shows it.
       const oldPhoto = keyFromUrl(previous?.image_url)
-      if (oldPhoto && previous?.image_url !== updated.image_url) await deleteFile(oldPhoto.key)
+      if (oldPhoto && previous?.image_url !== updated.image_url && !(await productPhotoInUse(shop.id, previous!.image_url!))) await deleteFile(oldPhoto.key)
       return jsonResponse(updated)
     })
   }

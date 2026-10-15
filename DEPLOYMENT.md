@@ -1,5 +1,9 @@
 # Deploying ShopOS (production and preprod)
 
+> **On a server, use the installer:** `sudo bash deploy/install.sh` sets up everything below (Docker,
+> firewall, settings, certificate, email, admin account, backups, the `shopos` command). See
+> [docs/deployment.md](docs/deployment.md). This page describes the stack itself and running it on this PC.
+
 The deployment stack is `docker-compose.yml`. Each environment is one copy of the stack with its own
 project name, env file, ports, volumes and backups, so production and preprod can share a machine.
 
@@ -8,7 +12,8 @@ project name, env file, ports, volumes and backups, so production and preprod ca
 | `db` | `mariadb:11.4` (LTS) | Data. Not published to the host; only `app` and `backup` can reach it. |
 | `minio` | `pgsty/minio` (community build of MinIO) | S3 file storage: product photos and payment proofs. Only `app` uses the S3 API; the web console is on this PC only. |
 | `app` | built from `Dockerfile` | Next.js production build, non-root user. Runs DB migrations on start. |
-| `caddy` | `caddy:2.10-alpine` | HTTPS, HTTP→HTTPS redirect, compression, security headers. |
+| `nginx` | built from `deploy/nginx` (official `nginx` 1.30) | HTTPS, HTTP→HTTPS redirect, compression, security headers, sign-in flood limit, real visitor IP. [docs/nginx.md](docs/nginx.md). |
+| `certbot` | `certbot/certbot` | Gets and renews Let's Encrypt certificates (`COMPOSE_PROFILES=letsencrypt`). |
 | `backup` | `mariadb:11.4` | `mariadb-dump` and an archive of the stored files, on start and then daily into a host folder, with retention. |
 | `mailpit` | `axllent/mailpit` | Optional local inbox (`COMPOSE_PROFILES=mailpit`) until a real mail provider is set up. |
 
@@ -78,10 +83,10 @@ Open it on this PC to click confirmation, reset and invitation links.
 3. Open the address, create the platform admin account, and confirm it from the email. Then share
    `<address>/signup` with shops, or sign up a test shop yourself with a second email address.
 
-With `SHOPOS_TLS=internal`, browsers warn until they trust Caddy's root certificate. To trust it on a
-device, copy it out and install it as a trusted root certificate:
+With `SHOPOS_TLS=internal`, browsers warn until they trust nginx's self-signed certificate. To trust it
+on a device, copy it out and install it as a trusted root certificate:
 ```
-docker compose -p shopos-prod cp caddy:/data/caddy/pki/authorities/local/root.crt shopos-root.crt
+docker compose -p shopos-prod cp nginx:/etc/nginx/shopos/state/self-signed.pem shopos-local.crt
 ```
 Tills need a trusted certificate for the offline features to work.
 
@@ -95,8 +100,9 @@ remove the `COMPOSE_PROFILES=mailpit` line and set `SHOPOS_SMTP_HOST`, `SHOPOS_S
 ## Going public with a domain
 
 Point the domain's DNS at the server, open ports 80 and 443, then set `SHOPOS_DOMAIN=<domain>`,
-`SHOPOS_PUBLIC_URL=https://<domain>`, `SHOPOS_TLS=<your email>` and, once the certificate works,
-`SHOPOS_HSTS='max-age=31536000'`. Caddy fetches and renews the certificate itself.
+`SHOPOS_PUBLIC_URL=https://<domain>`, `SHOPOS_TLS=<your email>`, add `letsencrypt` to `COMPOSE_PROFILES`
+and, once the certificate works, `SHOPOS_HSTS='max-age=31536000'`. The certbot service gets and renews
+the certificate; nginx picks it up by itself. Details, Cloudflare and subdomains: [docs/nginx.md](docs/nginx.md).
 
 ## Updating
 

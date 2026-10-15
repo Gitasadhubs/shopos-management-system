@@ -662,6 +662,12 @@ export async function getLocalProduct(shopId: string, id: string) {
   return getProduct(await getPool(), shopId, id)
 }
 
+// Whether any product of the shop (removed ones too) still shows this photo.
+export async function productPhotoInUse(shopId: string, url: string) {
+  const [rows] = await (await getPool()).query<RowDataPacket[]>('SELECT 1 FROM products WHERE shop_id = ? AND image_url = ? LIMIT 1', [shopId, url])
+  return rows.length > 0
+}
+
 export async function listLocalProducts(shopId: string, search = '') {
   const query = search.trim()
   const like = likePattern(query)

@@ -130,6 +130,7 @@ export default function BillingPage() {
             {details.account_number && <div className="rounded-xl border p-4 text-sm"><p className="mb-2 flex items-center gap-2 font-semibold"><Landmark className="size-4 text-emerald-600" />{details.bank_name || 'Bank transfer'}</p>{details.account_title && <p>{details.account_title}</p>}<p>Account: <span className="font-mono">{details.account_number}</span></p>{details.iban && <p>IBAN: <span className="font-mono">{details.iban}</span></p>}</div>}
             {details.wallet && <div className="rounded-xl border p-4 text-sm"><p className="mb-2 flex items-center gap-2 font-semibold"><Smartphone className="size-4 text-emerald-600" />JazzCash / EasyPaisa</p><p className="font-mono">{details.wallet}</p>{details.account_title && <p>{details.account_title}</p>}</div>}
             {details.whatsapp && <a href={`https://wa.me/${details.whatsapp.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`} target="_blank" rel="noreferrer" className="flex h-12 items-center justify-center gap-2 rounded-xl bg-emerald-600 font-semibold text-white transition hover:bg-emerald-700 sm:col-span-2"><MessageCircle className="size-5" />Send payment screenshot on WhatsApp</a>}
+            {!details.account_number && !details.wallet && !details.whatsapp && <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground sm:col-span-2">Payment details are being set up. Once you have paid, send the receipt below and we will activate your plan.</p>}
           </CardContent>
         </Card>
       </div>

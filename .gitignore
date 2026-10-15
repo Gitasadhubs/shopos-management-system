@@ -34,3 +34,8 @@ next-env.d.ts
 
 # Saved e2e sign-in sessions
 /e2e/.auth/
+certs/*
+!certs/.gitkeep
+# Sites added on a server (docs/nginx.md); only the example is tracked.
+/deploy/nginx/sites/*.conf.template
+/docker-compose.override.yml

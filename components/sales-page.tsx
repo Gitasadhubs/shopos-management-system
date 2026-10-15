@@ -223,7 +223,7 @@ export default function SalesPage() {
       <Dialog open={Boolean(openId)} onOpenChange={(isOpen) => { if (!isOpen) { setOpenId(null); setReturning(false) } }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader><DialogTitle>{returning ? 'Return items' : 'Receipt'} {sale ? receiptLabel(sale) : ''}</DialogTitle></DialogHeader>
-          {detail.error ? <p role="alert" className="text-sm text-rose-600">{detail.error}</p> : !sale ? <SkeletonRows rows={3} /> : returning ? <ReturnForm sale={sale} onDone={returned} onCancel={() => setReturning(false)} /> : <div className="grid gap-4">
+          {detail.error ? <div className="grid gap-3"><p role="alert" className="text-sm text-rose-600">{detail.error}</p><Button type="button" variant="outline" onClick={() => void detail.reload()}>Try again</Button></div> : !sale ? <SkeletonRows rows={3} /> : returning ? <ReturnForm sale={sale} onDone={returned} onCancel={() => setReturning(false)} /> : <div className="grid gap-4">
             {action.success && <Notice tone="success">{action.success}</Notice>}
             <Receipt sale={sale} shop={profile.data} copy onPrint={() => window.print()} className="" />
             {sale.returns.length > 0 && <div>

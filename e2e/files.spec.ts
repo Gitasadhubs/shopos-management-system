@@ -55,6 +55,24 @@ test('replacing or removing a photo deletes the old file', async ({ page, reques
   expect((await request.get(first)).status()).toBe(404)
 })
 
+test('a photo two products share stays until neither uses it', async ({ request }) => {
+  const upload = await request.post('/api/products/image', { multipart: { file: photo() } })
+  expect(upload.status(), await upload.text()).toBe(201)
+  const shared = (await upload.json()).data.url as string
+  const first = await createProduct(request, { name: uniqueName('Shared Photo A'), image_url: shared })
+  const second = await createProduct(request, { name: uniqueName('Shared Photo B'), image_url: shared })
+  const clearPhoto = async (product: typeof first) => {
+    const { id, name, sale_price, cost_price, stock_quantity, reorder_level } = product
+    const response = await request.put('/api/products', { data: { id, name, sale_price, cost_price, stock_quantity, reorder_level, image_url: '' } })
+    expect(response.status(), await response.text()).toBe(200)
+  }
+
+  await clearPhoto(first)
+  expect((await request.get(shared)).status(), 'the other product still shows it').toBe(200)
+  await clearPhoto(second)
+  expect((await request.get(shared)).status()).toBe(404)
+})
+
 test('uploads are checked by content and size', async ({ request }) => {
   const text = await request.post('/api/products/image', { multipart: { file: photo('fake.png', Buffer.from('not really an image'), 'image/png') } })
   expect(text.status()).toBe(415)

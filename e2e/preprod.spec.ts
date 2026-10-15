@@ -5,7 +5,7 @@ import path from 'node:path'
 import { expect, test } from '@playwright/test'
 import { isPreprod } from './helpers'
 
-// Checks for the deployment stack only (scripts/e2e.ps1 -Target preprod): Caddy, HTTPS, sign-in gate, backups.
+// Checks for the deployment stack only (scripts/e2e.ps1 -Target preprod): nginx, HTTPS, sign-in gate, backups.
 test.skip(!isPreprod, 'preprod stack only')
 
 const baseURL = process.env.BASE_URL!
@@ -60,7 +60,8 @@ test('responses carry security headers and no version details', async ({ request
   expect(headers['x-frame-options']).toBe('SAMEORIGIN')
   expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin')
   expect(headers['strict-transport-security']).toBeDefined()
-  expect(headers.server).toBeUndefined()
+  // nginx names itself but, with server_tokens off, never its version.
+  expect(headers.server ?? '').not.toMatch(/\d/)
   expect(headers['x-powered-by']).toBeUndefined()
 })
 

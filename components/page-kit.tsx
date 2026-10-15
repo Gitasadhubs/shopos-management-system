@@ -18,16 +18,27 @@ export class ApiError extends Error {
 }
 
 // JSON request to a ShopOS API route; throws ApiError with the server's message.
+// A request never waits forever: reads give up after 30 s, changes after 60 s.
+const READ_TIMEOUT_MS = 30_000
+const WRITE_TIMEOUT_MS = 60_000
+
 export async function api<T>(url: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  const method = init?.method ?? 'GET'
+  const write = method !== 'GET'
   let response: Response
   try {
     response = await fetch(url, {
-      method: init?.method ?? 'GET',
+      method,
       cache: 'no-store',
       headers: init?.body === undefined ? undefined : { 'content-type': 'application/json' },
       body: init?.body === undefined ? undefined : JSON.stringify(init.body),
+      signal: AbortSignal.timeout(write ? WRITE_TIMEOUT_MS : READ_TIMEOUT_MS),
     })
-  } catch {
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      // A slow save may still have gone through, so say so rather than inviting a blind retry.
+      throw new ApiError(write ? 'The server did not answer in time. Check whether it was saved before trying again.' : 'The server is taking too long to answer. Try again.', 0, 'timeout')
+    }
     throw new ApiError('Could not reach the server. Check your connection and try again.', 0)
   }
   const body = await response.json().catch(() => ({ data: null, error: 'The server sent an unexpected response.' }))

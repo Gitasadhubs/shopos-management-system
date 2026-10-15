@@ -1,6 +1,6 @@
 # Runs the Playwright suite in Docker against a throwaway database.
 #   .\scripts\e2e.ps1                     # dev server (next dev + in-memory MariaDB)
-#   .\scripts\e2e.ps1 -Target preprod     # the deployment stack: production build, MariaDB, Caddy HTTPS, Mailpit, backups
+#   .\scripts\e2e.ps1 -Target preprod     # the deployment stack: production build, MariaDB, nginx HTTPS, Mailpit, backups
 #   .\scripts\e2e.ps1 e2e/pos.spec.ts     # extra args go to playwright
 # Only one run at a time: runs share containers and the test-results folder.
 [CmdletBinding(PositionalBinding = $false)]
@@ -45,7 +45,7 @@ try {
   & docker @stack up -d --build --wait
   if ($LASTEXITCODE -ne 0) { throw 'Could not start the preprod stack.' }
   & docker run --rm --network shopos-e2e_default --ipc host --init `
-    -e BASE_URL=https://caddy:18443 -e E2E_TARGET=preprod -e CI=true -e MAILPIT_URL=http://mailpit:8025 `
+    -e BASE_URL=https://nginx:18443 -e E2E_TARGET=preprod -e CI=true -e MAILPIT_URL=http://mailpit:8025 `
     -v "${root}:/app" -v /app/node_modules -w /app `
     shopos-playwright:1.64.0 npx playwright test @PlaywrightArgs
   $exitCode = $LASTEXITCODE
