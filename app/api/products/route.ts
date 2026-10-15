@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { createProduct, defaultShopId, getProducts, updateProduct } from '@/lib/db'
 import { createClient } from '@/lib/supabase/server'
-import { insertLocalProduct, listLocalProducts, LocalDataError, removeLocalProduct, updateLocalProduct } from '@/lib/local-db'
+import { getLocalProduct, insertLocalProduct, listLocalProducts, LocalDataError, productPhotoInUse, removeLocalProduct, updateLocalProduct } from '@/lib/local-db'
 import { isSelfHosted, jsonResponse, parseBody, withShop } from '@/lib/local-session'
+import { keyFromUrl } from '@/lib/file-keys'
+import { deleteFile } from '@/lib/storage'
 
 export const runtime = 'nodejs'
 
@@ -17,8 +19,17 @@ const productSchema = z.object({
   sale_price: z.coerce.number().finite().nonnegative().max(1_000_000_000).default(0),
   stock_quantity: z.coerce.number().finite().nonnegative().max(1_000_000_000).default(0),
   reorder_level: z.coerce.number().finite().nonnegative().max(1_000_000_000).default(0),
-  image_url: z.string().url().max(2048).or(z.literal('')).optional().default(''),
+  // A photo uploaded through /api/products/image, or a link to one on the web.
+  image_url: z.string().trim().max(2048).refine((value) => value === '' || value.startsWith('/api/files/') || /^https?:\/\/\S+$/i.test(value), 'Choose an uploaded photo or a web link.').optional().default(''),
 })
+
+// Uploaded photos must be this shop's own.
+function foreignPhoto(url: string, shopId: string) {
+  if (!url.startsWith('/api/files/')) return false
+  const file = keyFromUrl(url)
+  return !file || file.shopId !== shopId || file.kind !== 'products'
+}
+const FOREIGN_PHOTO = 'That photo does not belong to this shop. Upload it again.'
 
 const updateSchema = productSchema.extend({ id: z.string().uuid('Invalid product id.') })
 const json = (data: unknown, error: string | null = null, status = 200) => NextResponse.json({ data, error }, { status })
@@ -55,6 +66,7 @@ export async function POST(request: Request) {
     return withShop(request, 'inventory', 'Unable to create product.', async ({ shop }) => {
       const body = await parseBody(request, productSchema)
       if (body instanceof NextResponse) return body
+      if (foreignPhoto(body.data.image_url, shop.id)) return jsonResponse(null, FOREIGN_PHOTO, 400)
       return jsonResponse(await insertLocalProduct(shop.id, body.data), null, 201)
     })
   }
@@ -81,8 +93,14 @@ export async function PUT(request: Request) {
       const body = await parseBody(request, updateSchema)
       if (body instanceof NextResponse) return body
       const { id, ...product } = body.data
+      if (foreignPhoto(product.image_url, shop.id)) return jsonResponse(null, FOREIGN_PHOTO, 400)
+      const previous = await getLocalProduct(shop.id, id)
       const updated = await updateLocalProduct(shop.id, id, product)
-      return updated ? jsonResponse(updated) : jsonResponse(null, 'Product not found.', 404)
+      if (!updated) return jsonResponse(null, 'Product not found.', 404)
+      // A replaced or removed photo is deleted once no other product shows it.
+      const oldPhoto = keyFromUrl(previous?.image_url)
+      if (oldPhoto && previous?.image_url !== updated.image_url && !(await productPhotoInUse(shop.id, previous!.image_url!))) await deleteFile(oldPhoto.key)
+      return jsonResponse(updated)
     })
   }
   let body: unknown

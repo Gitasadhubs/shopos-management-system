@@ -28,6 +28,23 @@ x-app-healthcheck: &app-healthcheck
   retries: 30
   start_period: 10s
 
+x-minio: &minio
+  image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+  command: ["server", "/data", "--console-address", ":9001"]
+  environment:
+    MINIO_ROOT_USER: shopos-dev
+    MINIO_ROOT_PASSWORD: dev-minio-password
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/minio/health/live"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+
+x-app-s3-env: &app-s3-env
+  SHOPOS_S3_BUCKET: shopos
+  SHOPOS_S3_ACCESS_KEY: shopos-dev
+  SHOPOS_S3_SECRET_KEY: dev-minio-password
+
 services:
   mariadb-dev:
     image: mariadb:11.4
@@ -46,6 +63,14 @@ services:
     ports:
       - "127.0.0.1:8027:8025"
 
+  # File storage (S3 API). Console at http://localhost:9021, user shopos-dev / dev-minio-password.
+  minio-dev:
+    <<: *minio
+    ports:
+      - "127.0.0.1:9021:9001"
+    volumes:
+      - minio-dev-data:/data
+
   shopos-dev:
     build:
       context: .
@@ -55,9 +80,13 @@ services:
     depends_on:
       mariadb-dev:
         condition: service_healthy
+      minio-dev:
+        condition: service_healthy
     ports:
       - "3000:3000"
     environment:
+      <<: *app-s3-env
+      SHOPOS_S3_ENDPOINT: http://minio-dev:9000
       NODE_ENV: development
       SHOPOS_STORAGE: mariadb
       SHOPOS_DB_HOST: mariadb-dev
@@ -93,6 +122,12 @@ services:
     profiles: ["test"]
     image: axllent/mailpit:v1.31.4
 
+  minio-test:
+    <<: *minio
+    profiles: ["test"]
+    tmpfs:
+      - /data
+
   shopos-test:
     profiles: ["test"]
     image: shopos:dev
@@ -102,7 +137,11 @@ services:
     depends_on:
       mariadb-test:
         condition: service_healthy
+      minio-test:
+        condition: service_healthy
     environment:
+      <<: *app-s3-env
+      SHOPOS_S3_ENDPOINT: http://minio-test:9000
       NODE_ENV: development
       SHOPOS_STORAGE: mariadb
       SHOPOS_DB_HOST: mariadb-test
@@ -112,6 +151,13 @@ services:
       SHOPOS_MAIL_FROM: ShopOS Test <test@shopos.local>
       # The suite signs up many shops from one container.
       SHOPOS_SIGNUP_LIMIT: 1000
+      # Sample payment details for the Billing page (clearly not a real account).
+      SHOPOS_PAY_BANK_NAME: Meezan Bank
+      SHOPOS_PAY_ACCOUNT_TITLE: ShopOS Test
+      SHOPOS_PAY_ACCOUNT_NUMBER: 0000-1111222233
+      SHOPOS_PAY_IBAN: PK00TEST0000111122223333
+      SHOPOS_PAY_WALLET: "03000000000"
+      SHOPOS_PAY_WHATSAPP: "923000000000"
       SHOPOS_DB_PORT: 3306
       SHOPOS_DB_NAME: shopos
       SHOPOS_DB_USER: shopos
@@ -143,5 +189,6 @@ services:
 
 volumes:
   mariadb-dev-data:
+  minio-dev-data:
   shopos-dev-next:
   shopos-test-next:

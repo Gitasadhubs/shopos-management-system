@@ -28,7 +28,17 @@ export async function getDayEnd(shopId: string, timezone: string, day: string) {
      FROM sales WHERE shop_id = ? AND created_at >= ? AND created_at < ?`,
     [shopId, start, end],
   )
-  const [[yesterday]] = await pool.query<RowDataPacket[]>('SELECT COALESCE(SUM(total), 0) AS total FROM sales WHERE shop_id = ? AND created_at >= ? AND created_at < ?', [shopId, yesterdayStart, start])
+  // Returns made today, against the payment method of their sale. Cash refunds leave the drawer.
+  const [returns] = await pool.query<RowDataPacket[]>(
+    `SELECT sale_returns.amount, sale_returns.khata_amount, sale_returns.refund_method, sale_returns.cost, sales.payment_method
+     FROM sale_returns JOIN sales ON sales.id = sale_returns.sale_id WHERE sale_returns.shop_id = ? AND sale_returns.created_at >= ? AND sale_returns.created_at < ?`,
+    [shopId, start, end],
+  )
+  const [[yesterday]] = await pool.query<RowDataPacket[]>(
+    `SELECT (SELECT COALESCE(SUM(total), 0) FROM sales WHERE shop_id = ? AND created_at >= ? AND created_at < ?)
+       - (SELECT COALESCE(SUM(amount), 0) FROM sale_returns WHERE shop_id = ? AND created_at >= ? AND created_at < ?) AS total`,
+    [shopId, yesterdayStart, start, shopId, yesterdayStart, start],
+  )
   const [items] = await pool.query<RowDataPacket[]>(
     `SELECT sale_items.product_name AS name, SUM(sale_items.quantity) AS quantity, SUM(sale_items.subtotal) AS revenue
      FROM sale_items JOIN sales ON sales.id = sale_items.sale_id WHERE sales.shop_id = ? AND sales.created_at >= ? AND sales.created_at < ?
@@ -58,15 +68,26 @@ export async function getDayEnd(shopId: string, timezone: string, day: string) {
       paidOnCredit += Number(sale.amount_paid)
     }
   }
-  const grossProfit = roundMoney(revenue - cogs)
   // Assumes everything that is not a card payment changed hands in cash.
   const cashIn = methods.cash + paidOnCredit + Number(khata.received)
-  const cashOut = Number(supplierPaid.paid) + Number(purchases.paid) + spent.total
+  let returned = 0
+  let cashRefunds = 0
+  for (const item of returns) {
+    const amount = Number(item.amount)
+    returned += amount
+    revenue -= amount
+    cogs -= Number(item.cost)
+    if (item.payment_method in methods) methods[item.payment_method as keyof typeof methods] -= amount
+    if (item.refund_method === 'cash') cashRefunds += amount - Number(item.khata_amount)
+  }
+  const grossProfit = roundMoney(revenue - cogs)
+  const cashOut = Number(supplierPaid.paid) + Number(purchases.paid) + spent.total + cashRefunds
   const yesterdayTotal = Number(yesterday.total)
 
   return {
     day,
     sales: { revenue: roundMoney(revenue), count: sales.length, average: sales.length ? roundMoney(revenue / sales.length) : 0, discounts: roundMoney(discounts), cogs: roundMoney(cogs) },
+    returns: { total: roundMoney(returned), count: returns.length, cash: roundMoney(cashRefunds) },
     vsYesterday: yesterdayTotal ? Math.round(((revenue - yesterdayTotal) / yesterdayTotal) * 100) : null,
     methods: { cash: roundMoney(methods.cash), card: roundMoney(methods.card), credit: roundMoney(methods.credit) },
     grossProfit,
@@ -100,6 +121,7 @@ export function dayEndText(shopName: string, report: DayEnd) {
     '',
     `💵 Cash ${money(report.methods.cash)} · 💳 Card ${money(report.methods.card)} · 📒 Khata ${money(report.methods.credit)}`,
   ]
+  if (report.returns.count) lines.push(`↩️ Returns: ${money(report.returns.total)} (${report.returns.count})`)
   if (report.khata.received) lines.push(`📥 Khata received: ${money(report.khata.received)}`)
   if (report.suppliers.paid) lines.push(`📤 Paid to suppliers: ${money(report.suppliers.paid)}`)
   lines.push(`🗄️ Cash expected in drawer: ${money(report.cash.expected)}`)
@@ -136,7 +158,7 @@ export async function sendDayEnd(shop: LocalShop, day: string) {
     try {
       const rows: Array<[string, string]> = [
         ['Sales', `${money(report.sales.revenue)} (${report.sales.count})`], ['Gross profit', money(report.grossProfit)], ['Expenses', money(report.expenses.total)], ['Net profit', money(report.netProfit)],
-        ['Cash', money(report.methods.cash)], ['Card', money(report.methods.card)], ['Khata (credit)', money(report.methods.credit)], ['Khata received', money(report.khata.received)], ['Cash expected in drawer', money(report.cash.expected)],
+        ['Cash', money(report.methods.cash)], ['Card', money(report.methods.card)], ['Khata (credit)', money(report.methods.credit)], ['Khata received', money(report.khata.received)], ['Returns', money(report.returns.total)], ['Cash expected in drawer', money(report.cash.expected)],
       ]
       const footer = report.topItems.length ? `Top items: ${report.topItems.map((item) => `${item.name} ×${item.quantity}`).join(', ')}` : 'No items sold.'
       await sendDayEndEmail(email, `${shop.name} — day-end report for ${longDate(day)}`, text, rows, footer)

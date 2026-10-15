@@ -33,7 +33,7 @@ export async function currentUser() {
 
 export async function clientInfo(): Promise<ClientInfo> {
   const list = await headers()
-  // Caddy replaces X-Forwarded-For with the real client address, so the first entry is trustworthy behind it.
+  // nginx replaces X-Forwarded-For with the real client address, so the first entry is trustworthy behind it.
   const ip = list.get('x-forwarded-for')?.split(',')[0]?.trim() || list.get('x-real-ip') || 'unknown'
   return { ip, userAgent: list.get('user-agent') }
 }

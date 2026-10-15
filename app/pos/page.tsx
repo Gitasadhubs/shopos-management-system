@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, LoaderCircle, Minus, Plus, Printer, ScanBarcode, Search, Volume2, VolumeX } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, LoaderCircle, Minus, Plus, ScanBarcode, Search, Volume2, VolumeX } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { EmptyCartIllustration, EmptyBoxIllustration } from '@/components/illustrations'
 import { colorFor } from '@/components/page-kit'
 import { Confetti } from '@/components/confetti'
+import { Receipt, receiptLabel, ReturnBadge, type ReceiptSale, type ShopProfile } from '@/components/receipt'
 import { playSound, setSoundEnabled, useSoundEnabled } from '@/lib/sounds'
 import { randomId } from '@/lib/utils'
 
@@ -22,23 +23,12 @@ type Product = {
   category: string | null
   sale_price: number
   stock_quantity: number
+  image_url?: string | null
 }
 
 type CartItem = { product: Product; quantity: number }
-type Sale = {
-  id: string
-  total: number
-  discount?: number
-  payment_method: string
-  amount_paid?: number
-  change_given?: number
-  credit_amount?: number
-  customer_name?: string | null
-  created_at: string
-  items: Array<{ product_name: string; quantity: number; unit_price?: number; subtotal: number }>
-}
+type Sale = ReceiptSale
 type Customer = { id: string; name: string; phone: string | null; balance: number }
-type ShopProfile = { name: string; phone: string | null; address: string | null; receipt_footer: string | null }
 type Method = 'cash' | 'card' | 'credit'
 
 const money = (value: number) => `₨ ${value.toLocaleString('en-PK', { maximumFractionDigits: 2 })}`
@@ -47,26 +37,6 @@ const round = (value: number) => Math.round(value * 100) / 100
 
 function initials(name: string) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase()
-}
-
-function Receipt({ sale, shop, onPrint }: { sale: Sale; shop: ShopProfile | null; onPrint: () => void }) {
-  return (
-    <Card className="print-receipt mt-4 border-dashed shopos-pop">
-      <CardContent className="p-5 font-mono text-xs">
-        <div className="text-center"><p className="text-sm font-bold">{shop?.name ?? 'ShopOS'}</p>{shop?.address && <p className="text-muted-foreground">{shop.address}</p>}{shop?.phone && <p className="text-muted-foreground">{shop.phone}</p>}<p className="mt-1 text-muted-foreground">#{sale.id.slice(0, 8)} · {new Date(sale.created_at).toLocaleString('en-PK')}</p></div>
-        <div className="my-3 border-t border-dashed" />
-        {sale.items.map((item) => <div key={item.product_name} className="flex justify-between gap-2"><span className="truncate">{item.product_name}</span><span className="shrink-0">{item.quantity} @ {money(item.unit_price ?? item.subtotal / item.quantity)}</span></div>)}
-        <div className="my-3 border-t border-dashed" />
-        {Boolean(sale.discount) && <div className="flex justify-between"><span>Discount</span><span>−{money(sale.discount!)}</span></div>}
-        <div className="flex justify-between text-sm font-bold"><span>Total</span><span>{money(sale.total)}</span></div>
-        <div className="flex justify-between capitalize"><span>Paid ({sale.payment_method})</span><span>{money(sale.amount_paid ?? sale.total)}</span></div>
-        {Boolean(sale.change_given) && <div className="flex justify-between"><span>Change</span><span>{money(sale.change_given!)}</span></div>}
-        {Boolean(sale.credit_amount) && <div className="flex justify-between font-semibold"><span>On khata{sale.customer_name ? ` (${sale.customer_name})` : ''}</span><span>{money(sale.credit_amount!)}</span></div>}
-        <p className="mt-3 text-center text-muted-foreground">{shop?.receipt_footer || 'Thank you for shopping with us!'}</p>
-        <Button variant="outline" size="sm" className="no-print mt-4 w-full font-sans" onClick={onPrint}><Printer className="mr-2 size-4" />Print receipt</Button>
-      </CardContent>
-    </Card>
-  )
 }
 
 export default function POSPage() {
@@ -289,7 +259,9 @@ export default function POSPage() {
                   <div className="flex min-h-12 items-start justify-between gap-2"><span className="font-semibold text-stone-900">{product.name}</span>{quantity > 0 && <Badge className="shopos-pop">{quantity}</Badge>}</div>
                   <div className="mt-3 flex items-end justify-between gap-2">
                     <div><p className="text-sm font-bold text-emerald-700">{money(Number(product.sale_price))}</p><p className={`mt-1 text-xs ${low ? 'font-semibold text-amber-700' : 'text-muted-foreground'}`}>Stock {product.stock_quantity}</p></div>
-                    <span aria-hidden="true" className={`flex size-10 items-center justify-center rounded-xl text-sm font-bold transition-transform group-hover:scale-110 ${colorFor(product.category || product.name)}`}>{initials(product.name)}</span>
+                    {product.image_url
+                      ? <img src={product.image_url} alt="" className="size-12 rounded-xl border object-cover transition-transform group-hover:scale-110" />
+                      : <span aria-hidden="true" className={`flex size-10 items-center justify-center rounded-xl text-sm font-bold transition-transform group-hover:scale-110 ${colorFor(product.category || product.name)}`}>{initials(product.name)}</span>}
                   </div>
                   {product.category && <span aria-hidden="true" className="absolute right-2 top-2 hidden rounded-full bg-stone-100 px-2 text-[10px] text-stone-500 group-hover:block">{product.category}</span>}
                 </button>
@@ -328,9 +300,9 @@ export default function POSPage() {
         </div>
 
         <Card className="no-print mt-8">
-          <CardHeader><CardTitle className="text-base">Recent sales</CardTitle></CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">Recent sales</CardTitle>{shop && <Link href="/sales" className="text-sm font-medium text-emerald-700">All sales and returns <ArrowUpRight className="ml-1 inline size-4" /></Link>}</CardHeader>
           <CardContent>{loadingSales ? <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Loading sales…</div> : sales.length ? <div className="divide-y">
-            {sales.map((sale) => <div key={sale.id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-semibold">Receipt {sale.id.slice(0, 8)}</p><p className="text-xs text-muted-foreground">{new Date(sale.created_at).toLocaleString()} · {sale.items.map((item) => `${item.product_name} × ${item.quantity}`).join(', ')}{sale.customer_name ? ` · ${sale.customer_name}` : ''}</p></div><div className="flex items-center gap-3"><Badge variant="secondary" className={`capitalize ${sale.payment_method === 'credit' ? 'bg-amber-100 text-amber-800' : sale.payment_method === 'card' ? 'bg-sky-100 text-sky-800' : 'bg-emerald-100 text-emerald-800'}`}>{sale.payment_method}</Badge><span className="text-sm font-bold">{money(Number(sale.total))}</span></div></div>)}
+            {sales.map((sale) => <div key={sale.id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-semibold">Receipt {receiptLabel(sale)}<ReturnBadge sale={sale} /></p><p className="text-xs text-muted-foreground">{new Date(sale.created_at).toLocaleString()} · {sale.items.map((item) => `${item.product_name} × ${item.quantity}`).join(', ')}{sale.customer_name ? ` · ${sale.customer_name}` : ''}</p></div><div className="flex items-center gap-3"><Badge variant="secondary" className={`capitalize ${sale.payment_method === 'credit' ? 'bg-amber-100 text-amber-800' : sale.payment_method === 'card' ? 'bg-sky-100 text-sky-800' : 'bg-emerald-100 text-emerald-800'}`}>{sale.payment_method}</Badge><span className="text-sm font-bold">{money(Number(sale.total))}</span></div></div>)}
           </div> : <p className="p-6 text-center text-sm text-muted-foreground">No completed sales yet.</p>}</CardContent>
         </Card>
       </div>

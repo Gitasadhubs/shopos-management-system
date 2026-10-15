@@ -1,12 +1,13 @@
 import Link from 'next/link'
+import { PaymentProofList } from '@/components/payment-proofs'
 import { formatDateTime, pkr, requirePlatformAdmin } from '@/lib/admin'
-import { listSubscriptionPayments, platformOverview } from '@/lib/local-platform'
+import { listPendingPaymentProofs, listSubscriptionPayments, platformOverview } from '@/lib/local-platform'
 
 export const dynamic = 'force-dynamic'
 
 export default async function PaymentsPage() {
   await requirePlatformAdmin()
-  const [payments, overview] = await Promise.all([listSubscriptionPayments(200), platformOverview()])
+  const [payments, overview, waiting] = await Promise.all([listSubscriptionPayments(200), platformOverview(), listPendingPaymentProofs()])
 
   return (
     <section className="p-5 sm:p-8">
@@ -18,6 +19,11 @@ export default async function PaymentsPage() {
         <div className="rounded-2xl bg-violet-50 p-5"><p className="text-sm text-violet-800">Monthly recurring</p><p className="mt-2 text-3xl font-bold text-violet-950">{pkr(overview.mrr)}</p></div>
         <div className="rounded-2xl bg-amber-50 p-5"><p className="text-sm text-amber-800">All time</p><p className="mt-2 text-3xl font-bold text-amber-950">{pkr(overview.revenueAllTime)}</p></div>
       </div>
+      {waiting.length > 0 && <div className="mt-6 overflow-hidden rounded-2xl border border-amber-200 bg-white shadow-sm">
+        <h2 className="border-b border-amber-100 bg-amber-50 px-5 py-4 font-bold text-amber-950">Proofs waiting ({waiting.length})</h2>
+        <PaymentProofList proofs={waiting} showShop />
+        <p className="border-t px-5 py-3 text-xs text-stone-500">Open the shop and record the payment once the money has arrived.</p>
+      </div>}
       <div className="mt-6 overflow-x-auto rounded-2xl border border-stone-200 bg-white shadow-sm">
         {payments.length ? <table className="w-full min-w-[720px] text-left text-sm">
           <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr>{['Date', 'Shop', 'Amount', 'Method', 'Reference', 'Months'].map((head) => <th key={head} className="px-5 py-3">{head}</th>)}</tr></thead>

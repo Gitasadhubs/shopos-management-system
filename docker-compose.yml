@@ -1,4 +1,4 @@
-# Deployment stack for preprod and production: MariaDB, the Next.js app, HTTPS via Caddy, daily backups.
+# Deployment stack for preprod and production: MariaDB, MinIO file storage, the Next.js app, HTTPS via nginx, daily backups.
 # Each environment gets its own project name and env file:
 #   docker compose -p shopos-prod --env-file .env.production up -d --build --wait
 #   docker compose -p shopos-preprod --env-file .env.preprod up -d --build --wait
@@ -42,6 +42,30 @@ services:
     security_opt: ["no-new-privileges:true"]
     logging: *logging
 
+  # S3-compatible file storage: product photos and payment proofs. The app creates its bucket and
+  # serves files itself, so the S3 API is not published; the web console is, on this machine only.
+  # pgsty/minio is the community build of MinIO (upstream stopped publishing images).
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${SHOPOS_S3_ACCESS_KEY:?Set SHOPOS_S3_ACCESS_KEY in the env file}
+      MINIO_ROOT_PASSWORD: ${SHOPOS_S3_SECRET_KEY:?Set SHOPOS_S3_SECRET_KEY in the env file}
+      MINIO_BROWSER_REDIRECT_URL: http://localhost:${SHOPOS_MINIO_CONSOLE_PORT:-9001}
+    ports:
+      - "127.0.0.1:${SHOPOS_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
   app:
     build:
       context: .
@@ -51,6 +75,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     environment:
       <<: *db-credentials
       NODE_ENV: production
@@ -59,6 +85,12 @@ services:
       SHOPOS_STORAGE: mariadb
       SHOPOS_DB_HOST: db
       SHOPOS_DB_PORT: 3306
+      # File storage. Point these at AWS S3 or Cloudflare R2 instead to move files off this machine.
+      SHOPOS_S3_ENDPOINT: ${SHOPOS_S3_ENDPOINT:-http://minio:9000}
+      SHOPOS_S3_REGION: ${SHOPOS_S3_REGION:-us-east-1}
+      SHOPOS_S3_BUCKET: ${SHOPOS_S3_BUCKET:-shopos}
+      SHOPOS_S3_ACCESS_KEY: ${SHOPOS_S3_ACCESS_KEY:?Set SHOPOS_S3_ACCESS_KEY in the env file}
+      SHOPOS_S3_SECRET_KEY: ${SHOPOS_S3_SECRET_KEY:?Set SHOPOS_S3_SECRET_KEY in the env file}
       # Links in emails (verify, reset, invite) start with this address.
       SHOPOS_PUBLIC_URL: ${SHOPOS_PUBLIC_URL:?Set SHOPOS_PUBLIC_URL in the env file}
       # Outgoing email. With COMPOSE_PROFILES=mailpit these point at the local Mailpit inbox.
@@ -94,31 +126,67 @@ services:
     security_opt: ["no-new-privileges:true"]
     logging: *logging
 
-  caddy:
-    image: caddy:2.10-alpine
+  # HTTPS in front of the app: nginx (latest stable line) with the ShopOS config. docs/nginx.md.
+  nginx:
+    build:
+      context: ./deploy/nginx
+    image: shopos-nginx:${SHOPOS_VERSION:-local}
     restart: unless-stopped
     depends_on:
       app:
         condition: service_healthy
     ports:
+      # Inside the container nginx listens on the same ports the host publishes, so redirects and
+      # links that include a port (preprod's 8443) stay correct.
       - "${SHOPOS_HTTP_PORT:-80}:${SHOPOS_HTTP_PORT:-80}"
       - "${SHOPOS_HTTPS_PORT:-443}:${SHOPOS_HTTPS_PORT:-443}"
-      - "${SHOPOS_HTTPS_PORT:-443}:${SHOPOS_HTTPS_PORT:-443}/udp"
     environment:
       SHOPOS_DOMAIN: ${SHOPOS_DOMAIN:?Set SHOPOS_DOMAIN in the env file}
+      SHOPOS_PUBLIC_URL: ${SHOPOS_PUBLIC_URL:?Set SHOPOS_PUBLIC_URL in the env file}
+      # internal (self-signed) · an email address (Let's Encrypt, with COMPOSE_PROFILES=letsencrypt) ·
+      # '/etc/nginx/certs/origin.pem /etc/nginx/certs/origin.key' (files in SHOPOS_CERTS_DIR)
       SHOPOS_TLS: ${SHOPOS_TLS:-internal}
       SHOPOS_HSTS: ${SHOPOS_HSTS:-max-age=0}
       SHOPOS_HTTP_PORT: ${SHOPOS_HTTP_PORT:-80}
       SHOPOS_HTTPS_PORT: ${SHOPOS_HTTPS_PORT:-443}
+      # Space-separated proxy ranges to trust for the visitor's address (Cloudflare's on the cloud server).
+      SHOPOS_TRUSTED_PROXIES: ${SHOPOS_TRUSTED_PROXIES:-127.0.0.1/32}
+      SHOPOS_REAL_IP_HEADER: ${SHOPOS_REAL_IP_HEADER:-CF-Connecting-IP}
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
+      - nginx-state:/etc/nginx/shopos/state
+      - letsencrypt:/etc/letsencrypt:ro
+      - acme-webroot:/var/www/acme:ro
+      # Certificate files you provide, e.g. a Cloudflare origin certificate.
+      - ${SHOPOS_CERTS_DIR:-./certs}:/etc/nginx/certs:ro
+      # Extra sites (subdomains, the landing page): *.conf.template files, applied by `shopos reload`.
+      - ./deploy/nginx/sites:/etc/nginx/templates/sites:ro
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:$${SHOPOS_HTTP_PORT}/nginx-health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
+    logging: *logging
+
+  # Let's Encrypt certificates for nginx: issued on start, renewed twice a day when due.
+  # Only with COMPOSE_PROFILES=letsencrypt (deploy/install.sh sets it when you choose Let's Encrypt).
+  certbot:
+    image: certbot/certbot:v5.8.0
+    profiles: ["letsencrypt"]
+    restart: unless-stopped
+    depends_on:
+      nginx:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/usr/local/bin/shopos-certbot.sh"]
+    environment:
+      SHOPOS_DOMAIN: ${SHOPOS_DOMAIN:?Set SHOPOS_DOMAIN in the env file}
+      SHOPOS_TLS: ${SHOPOS_TLS:-}
+      # More names to get certificates for (space-separated), for sites in deploy/nginx/sites.
+      SHOPOS_EXTRA_DOMAINS: ${SHOPOS_EXTRA_DOMAINS:-}
+      SHOPOS_LETSENCRYPT_STAGING: ${SHOPOS_LETSENCRYPT_STAGING:-}
+    volumes:
+      - ./deploy/nginx/certbot.sh:/usr/local/bin/shopos-certbot.sh:ro
+      - letsencrypt:/etc/letsencrypt
+      - acme-webroot:/var/www/acme
     security_opt: ["no-new-privileges:true"]
     logging: *logging
 
@@ -156,11 +224,15 @@ services:
       - ./scripts/db-backup.sh:/usr/local/bin/db-backup.sh:ro
       # A host folder, so dumps are easy to copy off the machine.
       - ${SHOPOS_BACKUP_DIR:-./backups}:/backups
+      # Stored files (photos, payment proofs), archived next to each database dump.
+      - minio-data:/minio-data:ro
     security_opt: ["no-new-privileges:true"]
     logging: *logging
 
 volumes:
   db-data:
-  caddy-data:
-  caddy-config:
+  minio-data:
+  nginx-state:
+  letsencrypt:
+  acme-webroot:
   mailpit-data:

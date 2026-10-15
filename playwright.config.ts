@@ -3,8 +3,8 @@ import { OWNER_STATE } from './e2e/auth-helpers'
 
 const baseURL = process.env.BASE_URL ?? 'http://localhost:3000'
 const isHttps = baseURL.startsWith('https:')
-// Preprod tests use Caddy's internal CA. The browser accepts it, as a till that trusts Caddy's root
-// certificate would; without that, service workers refuse to register.
+// Preprod tests use nginx's self-signed certificate. The browser accepts it, as a till that trusts
+// that certificate would; without that, service workers refuse to register.
 const certArgs = isHttps ? ['--ignore-certificate-errors'] : []
 
 // Tests share one database, so they run serially and use unique names and emails.

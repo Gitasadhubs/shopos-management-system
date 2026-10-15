@@ -3,7 +3,8 @@ import { getPool, LocalDataError, roundMoney } from '@/lib/local-db'
 import { expensesTotal } from '@/lib/local-expenses'
 import { addDays, dayKey, dayRange, dayStart } from '@/lib/time'
 
-// Sales reports for one shop over a range of whole days in the shop's time zone.
+// Sales reports for one shop over a range of whole days in the shop's time zone. Figures are net
+// of returns made in the range.
 
 export const MAX_REPORT_DAYS = 366
 
@@ -21,13 +22,25 @@ export async function getReport(shopId: string, timezone: string, from: string, 
      FROM sales WHERE sales.shop_id = ? AND sales.created_at >= ? AND sales.created_at < ?`,
     [shopId, start, end],
   )
-  const [productRows] = await pool.query<RowDataPacket[]>(
-    `SELECT sale_items.product_id, MAX(sale_items.product_name) AS name, SUM(sale_items.quantity) AS quantity, SUM(sale_items.subtotal) AS revenue,
-       SUM((sale_items.unit_price - sale_items.cost_price) * sale_items.quantity) AS margin
-     FROM sale_items JOIN sales ON sales.id = sale_items.sale_id
-     WHERE sales.shop_id = ? AND sales.created_at >= ? AND sales.created_at < ?
-     GROUP BY sale_items.product_id ORDER BY revenue DESC LIMIT 10`,
+  // Returns count on the day the goods came back, against the payment method of their sale.
+  const [returnRows] = await pool.query<RowDataPacket[]>(
+    `SELECT sale_returns.amount, sale_returns.cost, sale_returns.created_at, sales.payment_method
+     FROM sale_returns JOIN sales ON sales.id = sale_returns.sale_id WHERE sale_returns.shop_id = ? AND sale_returns.created_at >= ? AND sale_returns.created_at < ?`,
     [shopId, start, end],
+  )
+  // Sold minus returned, per product, at list price (before the sale discount), like sale subtotals.
+  const [productRows] = await pool.query<RowDataPacket[]>(
+    `SELECT product_id, MAX(name) AS name, SUM(quantity) AS quantity, SUM(revenue) AS revenue, SUM(margin) AS margin FROM (
+       SELECT sale_items.product_id, sale_items.product_name AS name, sale_items.quantity, sale_items.subtotal AS revenue,
+         (sale_items.unit_price - sale_items.cost_price) * sale_items.quantity AS margin
+       FROM sale_items JOIN sales ON sales.id = sale_items.sale_id
+       WHERE sales.shop_id = ? AND sales.created_at >= ? AND sales.created_at < ?
+       UNION ALL
+       SELECT ri.product_id, ri.product_name, -ri.quantity, -ri.unit_price * ri.quantity, -(ri.unit_price - ri.cost_price) * ri.quantity
+       FROM sale_return_items ri JOIN sale_returns ON sale_returns.id = ri.return_id
+       WHERE sale_returns.shop_id = ? AND sale_returns.created_at >= ? AND sale_returns.created_at < ?
+     ) moves GROUP BY product_id HAVING SUM(quantity) > 0 ORDER BY revenue DESC LIMIT 10`,
+    [shopId, start, end, shopId, start, end],
   )
   const [[purchases]] = await pool.query<RowDataPacket[]>('SELECT COALESCE(SUM(total), 0) AS total, COUNT(*) AS count FROM purchases WHERE shop_id = ? AND created_at >= ? AND created_at < ?', [shopId, start, end])
   const expenses = await expensesTotal(shopId, from, to)
@@ -57,6 +70,22 @@ export async function getReport(shopId: string, timezone: string, from: string, 
     method.count += 1
     methods.set(row.payment_method, method)
   }
+  let returns = 0
+  for (const row of returnRows) {
+    const amount = Number(row.amount)
+    const cost = Number(row.cost)
+    returns += amount
+    revenue -= amount
+    cogs -= cost
+    const bucket = daily.get(dayKey(timezone, new Date(row.created_at)))
+    if (bucket) {
+      bucket.revenue -= amount
+      bucket.profit -= amount - cost
+    }
+    const method = methods.get(row.payment_method) ?? { method: row.payment_method, total: 0, count: 0 }
+    method.total -= amount
+    methods.set(row.payment_method, method)
+  }
 
   const count = saleRows.length
   return {
@@ -71,6 +100,8 @@ export async function getReport(shopId: string, timezone: string, from: string, 
       count,
       average: count ? roundMoney(revenue / count) : 0,
       discounts: roundMoney(discounts),
+      returns: roundMoney(returns),
+      returnCount: returnRows.length,
       creditGiven: roundMoney(creditGiven),
       purchases: roundMoney(Number(purchases.total)),
       purchaseCount: Number(purchases.count),

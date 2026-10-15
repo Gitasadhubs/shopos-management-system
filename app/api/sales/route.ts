@@ -3,6 +3,7 @@ import { isSelfHosted, jsonResponse, parseBody, withShop } from '@/lib/local-ses
 import { z } from 'zod'
 import { createLocalSale, listLocalSales } from '@/lib/local-db'
 import { createClient } from '@/lib/supabase/server'
+import { addDays, dayStart } from '@/lib/time'
 
 export const runtime = 'nodejs'
 
@@ -38,9 +39,31 @@ const hostedSaleSchema = z.object({
 
 const json = (data: unknown, error: string | null = null, status = 200) => NextResponse.json({ data, error }, { status })
 
+const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00Z`)))
+const listSchema = z.object({
+  search: z.string().max(160).optional(),
+  from: day.optional(),
+  to: day.optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+})
+
+// ?search=&from=&to= (shop-local days)&limit=&offset=. Without them: the 20 newest sales.
 export async function GET(request: Request) {
   if (isSelfHosted()) {
-    return withShop(request, 'pos', 'Unable to load sales history.', async ({ shop }) => jsonResponse(await listLocalSales(shop.id)))
+    return withShop(request, 'pos', 'Unable to load sales history.', async ({ shop }) => {
+      const params = Object.fromEntries([...new URL(request.url).searchParams].filter(([, value]) => value !== ''))
+      const parsed = listSchema.safeParse(params)
+      if (!parsed.success) return jsonResponse(null, 'Invalid search. Dates must look like 2026-01-31.', 400)
+      const { search, from, to, limit, offset } = parsed.data
+      return jsonResponse(await listLocalSales(shop.id, {
+        search,
+        start: from ? dayStart(shop.timezone, from) : undefined,
+        end: to ? dayStart(shop.timezone, addDays(to, 1)) : undefined,
+        limit,
+        offset,
+      }))
+    })
   }
 
   try {

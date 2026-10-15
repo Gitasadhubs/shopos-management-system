@@ -9,7 +9,7 @@ test('health endpoint reports MariaDB storage and is not cached', async ({ reque
   expect(await response.json()).toMatchObject({ ok: true, storage: 'mariadb' })
 })
 
-for (const path of ['/', '/dashboard', '/inventory', '/pos', '/account', '/settings/users', '/offline', '/sync-log', '/settings/sync-log', '/customers', '/suppliers', '/purchases', '/reports', '/settings', '/billing', '/expenses', '/day-end']) {
+for (const path of ['/', '/dashboard', '/inventory', '/pos', '/sales', '/account', '/settings/users', '/offline', '/sync-log', '/settings/sync-log', '/customers', '/suppliers', '/purchases', '/reports', '/settings', '/billing', '/expenses', '/day-end']) {
   test(`${path} loads without errors`, async ({ page }) => {
     const errors = trackErrors(page)
     const response = await page.goto(path)
@@ -32,13 +32,13 @@ test('sidebar shows the signed-in owner and every workspace link', async ({ page
   const sidebar = page.getByRole('complementary')
   await expect(sidebar.getByText(OWNER.name)).toBeVisible()
   await expect(sidebar.getByText('owner', { exact: true })).toBeVisible()
-  await expect(sidebar.getByRole('navigation').getByRole('link')).toHaveText(['Dashboard', 'POS', 'Inventory', 'Customers', 'Suppliers', 'Purchases', 'Expenses', 'Reports', 'Day end', 'Staff', 'Settings', 'Billing', 'Account'])
+  await expect(sidebar.getByRole('navigation').getByRole('link')).toHaveText(['Dashboard', 'POS', 'Sales', 'Inventory', 'Customers', 'Suppliers', 'Purchases', 'Expenses', 'Reports', 'Day end', 'Staff', 'Settings', 'Billing', 'Account'])
   await expect(sidebar.getByRole('button', { name: 'Sign out' })).toBeVisible()
 })
 
 test('every sidebar link opens its page with a matching title', async ({ page }) => {
   const pages: Array<[string, string, RegExp]> = [
-    ['Customers', '/customers', /^Customers$/], ['Suppliers', '/suppliers', /^Suppliers$/], ['Purchases', '/purchases', /^Purchases$/],
+    ['Sales', '/sales', /^Sales$/], ['Customers', '/customers', /^Customers$/], ['Suppliers', '/suppliers', /^Suppliers$/], ['Purchases', '/purchases', /^Purchases$/],
     ['Expenses', '/expenses', /^Expenses$/], ['Reports', '/reports', /^Reports$/], ['Day end', '/day-end', /^Day end$/], ['Staff', '/settings/users', /^Staff$/], ['Settings', '/settings', /^Settings$/], ['Billing', '/billing', /^Billing$/], ['Account', '/account', /Account/],
   ]
   await page.goto('/dashboard')

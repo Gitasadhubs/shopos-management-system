@@ -1,0 +1,56 @@
+# An extra site on this server's nginx: the landing page on www, a subdomain, a redirect.
+#   1. Copy this file to <name>.conf.template in this folder. Only *.conf.template files load, and git
+#      ignores them, so `shopos update` leaves them alone.
+#   2. Replace www.example.com and the upstream below.
+#   3. Certificate: a Cloudflare origin certificate already covers *.yourdomain, so keep the include
+#      line. With Let's Encrypt, add the name to SHOPOS_EXTRA_DOMAINS (shopos env), wait for
+#      "certificate for <name> issued" in `shopos logs certbot`, then swap in the two commented lines.
+#   4. shopos reload   (checks the file first; on a mistake the running sites carry on unchanged)
+# ${SHOPOS_*} values come from the settings file; nginx's own $variables are left alone.
+# Full guide: docs/nginx.md.
+
+server {
+  listen ${SHOPOS_HTTP_PORT};
+  server_name www.example.com;
+  server_tokens off;
+
+  location ^~ /.well-known/acme-challenge/ {
+    root /var/www/acme;
+    default_type text/plain;
+  }
+
+  location / {
+    return 308 https://$host$request_uri;
+  }
+}
+
+server {
+  listen ${SHOPOS_HTTPS_PORT} ssl;
+  http2 on;
+  server_name www.example.com;
+  server_tokens off;
+
+  include /etc/nginx/shopos/ssl.conf;
+  # ssl_certificate     /etc/letsencrypt/live/www.example.com/fullchain.pem;
+  # ssl_certificate_key /etc/letsencrypt/live/www.example.com/privkey.pem;
+
+  add_header Strict-Transport-Security "${SHOPOS_HSTS}" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+  # Looked up per request through Docker's DNS, so if this container is down only this site answers
+  # 502; with a plain name nginx would refuse to start and take ShopOS down with it.
+  resolver 127.0.0.11 valid=30s ipv6=off;
+  set $site_upstream http://landing:8090;
+
+  location / {
+    proxy_pass $site_upstream;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
+  # A pure redirect instead (e.g. www to the bare domain): replace the location above with
+  #   location / { return 308 https://example.com$request_uri; }
+}

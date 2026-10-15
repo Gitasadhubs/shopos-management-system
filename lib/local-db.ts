@@ -23,9 +23,11 @@ export type LocalProduct = {
 }
 
 export type LocalProductInput = Omit<LocalProduct, 'id' | 'created_at' | 'updated_at' | 'image_url' | 'is_active'> & { image_url?: string | null }
-export type LocalSaleItem = { product_id: string; product_name: string; quantity: number; unit_price: number; cost_price: number; subtotal: number }
+export type LocalSaleItem = { product_id: string; product_name: string; quantity: number; unit_price: number; cost_price: number; subtotal: number; returned_quantity: number }
 export type LocalSale = {
   id: string
+  // Invoice number: 1, 2, 3… within the shop.
+  number: number
   client_id: string | null
   total: number
   discount: number
@@ -33,11 +35,26 @@ export type LocalSale = {
   amount_paid: number
   change_given: number
   credit_amount: number
+  // Money given back so far for returned items (sum of the sale's returns).
+  refunded: number
   customer_id: string | null
   customer_name: string | null
+  created_by_name: string | null
   created_at: string
   items: LocalSaleItem[]
 }
+export type LocalSaleReturn = {
+  id: string
+  amount: number
+  khata_amount: number
+  refund_method: string
+  reason: string | null
+  created_by_name: string | null
+  created_at: string
+  items: Array<{ product_id: string; product_name: string; quantity: number; amount: number }>
+}
+export type LocalSaleReturnInput = { items: Array<{ product_id: string; quantity: number }>; reason?: string; client_id?: string }
+export type LocalSaleFilter = { search?: string; start?: Date; end?: Date; limit?: number; offset?: number }
 export type PaymentMethod = 'cash' | 'card' | 'credit'
 export type LocalSaleInput = { items: Array<{ product_id: string; quantity: number }>; discount?: number; payment_method: PaymentMethod; amount_paid?: number; client_id?: string; customer_id?: string | null }
 
@@ -52,8 +69,8 @@ export class LocalDataError extends Error {
 export type Queryable = Pool | PoolConnection
 
 const PRODUCT_COLUMNS = 'id, name, sku, barcode, category, unit, cost_price, sale_price, stock_quantity, reorder_level, image_url, is_active, created_at, updated_at'
-const SALE_COLUMNS = 'sales.id, sales.client_id, sales.total, sales.discount, sales.payment_method, sales.amount_paid, sales.change_given, sales.credit_amount, sales.customer_id, customers.name AS customer_name, sales.created_at'
-const SALE_FROM = 'sales LEFT JOIN customers ON customers.id = sales.customer_id'
+const SALE_COLUMNS = 'sales.id, sales.number, sales.client_id, sales.total, sales.discount, sales.payment_method, sales.amount_paid, sales.change_given, sales.credit_amount, sales.refunded, sales.customer_id, customers.name AS customer_name, seller.full_name AS created_by_name, sales.created_at'
+const SALE_FROM = 'sales LEFT JOIN customers ON customers.id = sales.customer_id LEFT JOIN users AS seller ON seller.id = sales.created_by'
 const TABLE_OPTIONS = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
 export const TRIAL_DAYS = 14
 export const PLAN_PRICE_PKR = 1500
@@ -422,6 +439,78 @@ const migrations: string[][] = [
       CONSTRAINT report_deliveries_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE
     ) ${TABLE_OPTIONS}`,
   ],
+  [
+    // Invoice numbers: 1, 2, 3… per shop, in the order the sales were made. next_sale_number is the
+    // shop's counter; locking the shop row while taking a number keeps numbers unique and gap-free.
+    `ALTER TABLE shops ADD COLUMN IF NOT EXISTS next_sale_number INT NOT NULL DEFAULT 1`,
+    `ALTER TABLE sales
+      ADD COLUMN IF NOT EXISTS number INT NULL AFTER shop_id,
+      ADD COLUMN IF NOT EXISTS refunded DECIMAL(14,2) NOT NULL DEFAULT 0 AFTER credit_amount`,
+    `UPDATE sales JOIN (SELECT id, ROW_NUMBER() OVER (PARTITION BY shop_id ORDER BY created_at, id) AS n FROM sales) numbered ON numbered.id = sales.id
+     SET sales.number = numbered.n`,
+    `UPDATE shops SET next_sale_number = (SELECT COALESCE(MAX(number), 0) + 1 FROM sales WHERE sales.shop_id = shops.id)`,
+    `ALTER TABLE sales
+      MODIFY number INT NOT NULL,
+      ADD UNIQUE KEY IF NOT EXISTS sales_shop_number_uq (shop_id, number)`,
+
+    // Returns: items brought back from a sale. The refund goes back on the customer's khata first
+    // (up to what that sale left unpaid), the rest in cash, or to the card for a card sale.
+    // amount is net of the sale's discount; cost is the cost of the returned goods.
+    `CREATE TABLE IF NOT EXISTS sale_returns (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      sale_id CHAR(36) NOT NULL,
+      client_id VARCHAR(120) NULL,
+      amount DECIMAL(14,2) NOT NULL,
+      khata_amount DECIMAL(14,2) NOT NULL DEFAULT 0,
+      refund_method VARCHAR(10) NOT NULL,
+      cost DECIMAL(14,2) NOT NULL DEFAULT 0,
+      reason VARCHAR(300) NULL,
+      created_by CHAR(36) NULL,
+      created_at DATETIME(3) NOT NULL,
+      UNIQUE KEY sale_returns_shop_client_uq (shop_id, client_id),
+      KEY sale_returns_shop_created_idx (shop_id, created_at),
+      KEY sale_returns_sale_idx (sale_id),
+      CONSTRAINT sale_returns_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      CONSTRAINT sale_returns_sale_fk FOREIGN KEY (sale_id) REFERENCES sales (id) ON DELETE CASCADE,
+      CONSTRAINT sale_returns_amounts_valid CHECK (amount >= 0 AND khata_amount >= 0 AND khata_amount <= amount),
+      CONSTRAINT sale_returns_method_valid CHECK (refund_method IN ('cash', 'card'))
+    ) ${TABLE_OPTIONS}`,
+    `CREATE TABLE IF NOT EXISTS sale_return_items (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      return_id CHAR(36) NOT NULL,
+      product_id CHAR(36) NOT NULL,
+      product_name VARCHAR(160) NOT NULL,
+      quantity DECIMAL(14,3) NOT NULL,
+      unit_price DECIMAL(14,2) NOT NULL,
+      cost_price DECIMAL(14,2) NOT NULL,
+      amount DECIMAL(14,2) NOT NULL,
+      KEY sale_return_items_return_idx (return_id),
+      CONSTRAINT sale_return_items_return_fk FOREIGN KEY (return_id) REFERENCES sale_returns (id) ON DELETE CASCADE,
+      CONSTRAINT sale_return_items_product_fk FOREIGN KEY (product_id) REFERENCES products (id),
+      CONSTRAINT sale_return_items_quantity_positive CHECK (quantity > 0)
+    ) ${TABLE_OPTIONS}`,
+    `ALTER TABLE customer_ledger DROP CONSTRAINT IF EXISTS customer_ledger_kind_valid`,
+    `ALTER TABLE customer_ledger ADD CONSTRAINT IF NOT EXISTS customer_ledger_kind_valid CHECK (kind IN ('sale', 'payment', 'adjustment', 'return'))`,
+  ],
+  [
+    // Screenshots or PDFs of subscription payments, sent by shop owners from Billing. The file itself
+    // is in object storage (lib/storage.ts). reviewed_at is set when an admin records a payment.
+    `CREATE TABLE IF NOT EXISTS payment_proofs (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      shop_id CHAR(36) NOT NULL,
+      object_key VARCHAR(300) NOT NULL,
+      content_type VARCHAR(60) NOT NULL,
+      size_bytes INT NOT NULL,
+      note VARCHAR(300) NULL,
+      uploaded_by CHAR(36) NULL,
+      created_at DATETIME(3) NOT NULL,
+      reviewed_at DATETIME(3) NULL,
+      KEY payment_proofs_shop_idx (shop_id, created_at),
+      KEY payment_proofs_pending_idx (reviewed_at, created_at),
+      CONSTRAINT payment_proofs_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE
+    ) ${TABLE_OPTIONS}`,
+  ],
 ]
 
 // Survives Next dev hot reloads, which would otherwise open a new pool per edit.
@@ -569,6 +658,16 @@ function translateDuplicateCode(error: unknown): never {
   throw error
 }
 
+export async function getLocalProduct(shopId: string, id: string) {
+  return getProduct(await getPool(), shopId, id)
+}
+
+// Whether any product of the shop (removed ones too) still shows this photo.
+export async function productPhotoInUse(shopId: string, url: string) {
+  const [rows] = await (await getPool()).query<RowDataPacket[]>('SELECT 1 FROM products WHERE shop_id = ? AND image_url = ? LIMIT 1', [shopId, url])
+  return rows.length > 0
+}
+
 export async function listLocalProducts(shopId: string, search = '') {
   const query = search.trim()
   const like = likePattern(query)
@@ -628,6 +727,7 @@ export async function adjustLocalStock(shopId: string, productId: string, delta:
 function saleFromRow(row: RowDataPacket, items: LocalSaleItem[]): LocalSale {
   return {
     id: row.id,
+    number: Number(row.number),
     client_id: row.client_id,
     total: Number(row.total),
     discount: Number(row.discount),
@@ -635,8 +735,10 @@ function saleFromRow(row: RowDataPacket, items: LocalSaleItem[]): LocalSale {
     amount_paid: Number(row.amount_paid),
     change_given: Number(row.change_given),
     credit_amount: Number(row.credit_amount),
+    refunded: Number(row.refunded),
     customer_id: row.customer_id,
     customer_name: row.customer_name ?? null,
+    created_by_name: row.created_by_name ?? null,
     created_at: iso(row.created_at),
     items,
   }
@@ -644,14 +746,17 @@ function saleFromRow(row: RowDataPacket, items: LocalSaleItem[]): LocalSale {
 
 async function attachItems(db: Queryable, rows: RowDataPacket[]) {
   if (!rows.length) return []
+  // A product appears once per sale, so returns match sale lines by product.
   const [itemRows] = await db.query<RowDataPacket[]>(
-    'SELECT sale_id, product_id, product_name, quantity, unit_price, cost_price, subtotal FROM sale_items WHERE sale_id IN (?) ORDER BY product_name',
+    `SELECT sale_items.sale_id, sale_items.product_id, sale_items.product_name, sale_items.quantity, sale_items.unit_price, sale_items.cost_price, sale_items.subtotal,
+       (SELECT COALESCE(SUM(ri.quantity), 0) FROM sale_return_items ri JOIN sale_returns r ON r.id = ri.return_id WHERE r.sale_id = sale_items.sale_id AND ri.product_id = sale_items.product_id) AS returned_quantity
+     FROM sale_items WHERE sale_items.sale_id IN (?) ORDER BY sale_items.product_name`,
     [rows.map((row) => row.id)],
   )
   const itemsBySale = new Map<string, LocalSaleItem[]>()
   for (const item of itemRows) {
     const list = itemsBySale.get(item.sale_id) ?? []
-    list.push({ product_id: item.product_id, product_name: item.product_name, quantity: Number(item.quantity), unit_price: Number(item.unit_price), cost_price: Number(item.cost_price), subtotal: Number(item.subtotal) })
+    list.push({ product_id: item.product_id, product_name: item.product_name, quantity: Number(item.quantity), unit_price: Number(item.unit_price), cost_price: Number(item.cost_price), subtotal: Number(item.subtotal), returned_quantity: Number(item.returned_quantity) })
     itemsBySale.set(item.sale_id, list)
   }
   return rows.map((row) => saleFromRow(row, itemsBySale.get(row.id) ?? []))
@@ -701,12 +806,18 @@ export async function createLocalSale(shopId: string, input: LocalSaleInput, act
       if (credit && amountPaid > total) throw new LocalDataError('For a credit sale, the amount paid cannot be more than the total.', 400)
       const creditAmount = credit ? roundMoney(total - amountPaid) : 0
 
+      // Taken last: the shop row lock serialises this shop's checkouts only for the final inserts.
+      const [[counter]] = await connection.query<RowDataPacket[]>('SELECT next_sale_number FROM shops WHERE id = ? FOR UPDATE', [shopId])
+      if (!counter) throw new LocalDataError('Shop not found.', 404)
+      const number = Number(counter.next_sale_number)
+      await connection.query('UPDATE shops SET next_sale_number = ? WHERE id = ?', [number + 1, shopId])
+
       const id = randomUUID()
       const createdAt = new Date()
       await connection.query(
-        `INSERT INTO sales (id, shop_id, client_id, customer_id, total, discount, payment_method, amount_paid, change_given, credit_amount, created_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, shopId, input.client_id ?? null, input.customer_id ?? null, total, discount, input.payment_method, amountPaid, credit ? 0 : roundMoney(amountPaid - total), creditAmount, actorId, createdAt],
+        `INSERT INTO sales (id, shop_id, number, client_id, customer_id, total, discount, payment_method, amount_paid, change_given, credit_amount, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, shopId, number, input.client_id ?? null, input.customer_id ?? null, total, discount, input.payment_method, amountPaid, credit ? 0 : roundMoney(amountPaid - total), creditAmount, actorId, createdAt],
       )
       for (const { product, quantity, subtotal: lineSubtotal } of lines) {
         await connection.query(
@@ -719,7 +830,7 @@ export async function createLocalSale(shopId: string, input: LocalSaleInput, act
         await connection.query('UPDATE customers SET balance = balance + ?, updated_at = ? WHERE id = ?', [creditAmount, createdAt, input.customer_id])
         await connection.query(
           'INSERT INTO customer_ledger (id, shop_id, customer_id, kind, amount, sale_id, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [randomUUID(), shopId, input.customer_id, 'sale', creditAmount, id, `Sale ${id.slice(0, 8)}`, actorId, createdAt],
+          [randomUUID(), shopId, input.customer_id, 'sale', creditAmount, id, `Sale #${number}`, actorId, createdAt],
         )
       }
       return (await findSale(connection, shopId, 'id', id))!
@@ -734,11 +845,152 @@ export async function createLocalSale(shopId: string, input: LocalSaleInput, act
   }
 }
 
-export async function listLocalSales(shopId: string, limit = 20) {
+// Newest first. search matches the invoice number ("12" or "#12"), the customer or a product name.
+export async function listLocalSales(shopId: string, filter: LocalSaleFilter = {}) {
   const pool = await getPool()
-  const [rows] = await pool.query<RowDataPacket[]>(`SELECT ${SALE_COLUMNS} FROM ${SALE_FROM} WHERE sales.shop_id = ? ORDER BY sales.created_at DESC, sales.id LIMIT ?`, [shopId, limit])
+  const conditions = ['sales.shop_id = ?']
+  const values: unknown[] = [shopId]
+  const search = filter.search?.trim() ?? ''
+  if (search) {
+    const like = likePattern(search)
+    const number = /^#?\d{1,9}$/.test(search) ? Number(search.replace('#', '')) : -1
+    conditions.push('(sales.number = ? OR customers.name LIKE ? OR EXISTS (SELECT 1 FROM sale_items WHERE sale_items.sale_id = sales.id AND sale_items.product_name LIKE ?))')
+    values.push(number, like, like)
+  }
+  if (filter.start) {
+    conditions.push('sales.created_at >= ?')
+    values.push(filter.start)
+  }
+  if (filter.end) {
+    conditions.push('sales.created_at < ?')
+    values.push(filter.end)
+  }
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT ${SALE_COLUMNS} FROM ${SALE_FROM} WHERE ${conditions.join(' AND ')} ORDER BY sales.created_at DESC, sales.id LIMIT ? OFFSET ?`,
+    [...values, filter.limit ?? 20, filter.offset ?? 0],
+  )
   return attachItems(pool, rows)
 }
+
+async function listReturns(db: Queryable, saleId: string): Promise<LocalSaleReturn[]> {
+  const [rows] = await db.query<RowDataPacket[]>(
+    `SELECT sale_returns.*, users.full_name AS created_by_name FROM sale_returns LEFT JOIN users ON users.id = sale_returns.created_by
+     WHERE sale_returns.sale_id = ? ORDER BY sale_returns.created_at, sale_returns.id`,
+    [saleId],
+  )
+  if (!rows.length) return []
+  const [items] = await db.query<RowDataPacket[]>('SELECT return_id, product_id, product_name, quantity, amount FROM sale_return_items WHERE return_id IN (?) ORDER BY product_name', [rows.map((row) => row.id)])
+  return rows.map((row) => ({
+    id: row.id,
+    amount: Number(row.amount),
+    khata_amount: Number(row.khata_amount),
+    refund_method: row.refund_method,
+    reason: row.reason,
+    created_by_name: row.created_by_name ?? null,
+    created_at: iso(row.created_at),
+    items: items.filter((item) => item.return_id === row.id).map((item) => ({ product_id: item.product_id, product_name: item.product_name, quantity: Number(item.quantity), amount: Number(item.amount) })),
+  }))
+}
+
+// One sale with everything returned from it.
+export async function getLocalSale(shopId: string, id: string, db?: Queryable) {
+  const queryable = db ?? (await getPool())
+  const sale = await findSale(queryable, shopId, 'id', id)
+  if (!sale) return null
+  return { ...sale, returns: await listReturns(queryable, id) }
+}
+
+// Takes items back from a sale: puts them back in stock and refunds their share of what was paid
+// (the sale's discount is shared across its items). The refund first comes off the customer's
+// khata, up to what this sale left unpaid, and the rest is cash, or goes back to the card.
+export async function returnLocalSale(shopId: string, saleId: string, input: LocalSaleReturnInput, actorId: string | null = null) {
+  try {
+    return await withTransaction(async (connection) => {
+      // Lock the sale before any plain read: InnoDB fixes a transaction's snapshot at its first
+      // non-locking read, so later reads then see returns committed by a concurrent request.
+      const [saleRows] = await connection.query<RowDataPacket[]>('SELECT id, number, total, payment_method, credit_amount, refunded, customer_id FROM sales WHERE shop_id = ? AND id = ? FOR UPDATE', [shopId, saleId])
+      const sale = saleRows[0]
+      if (!sale) throw new LocalDataError('Sale not found.', 404)
+
+      // A retried request (same client_id) returns the sale as the first attempt left it.
+      if (input.client_id) {
+        const [existing] = await connection.query<RowDataPacket[]>('SELECT sale_id FROM sale_returns WHERE shop_id = ? AND client_id = ?', [shopId, input.client_id])
+        if (existing[0]) {
+          if (existing[0].sale_id !== saleId) throw new LocalDataError('This return was already recorded for another sale.', 409)
+          return (await getLocalSale(shopId, saleId, connection))!
+        }
+      }
+
+      const found = (await findSale(connection, shopId, 'id', saleId))!
+      const saleItems = new Map(found.items.map((item) => [item.product_id, item]))
+
+      const ids = input.items.map((item) => item.product_id)
+      if (new Set(ids).size !== ids.length) throw new LocalDataError('Each product can only appear once in a return.', 400)
+      const gross = found.items.reduce((sum, item) => sum + item.subtotal, 0)
+      // What the customer actually paid per rupee of list price, after the sale's discount.
+      const paidShare = gross > 0 ? Number(sale.total) / gross : 0
+      const lines = input.items.map(({ product_id, quantity }) => {
+        const item = saleItems.get(product_id)
+        if (!item) throw new LocalDataError('That product is not part of this sale.', 400)
+        const left = roundQuantity(item.quantity - item.returned_quantity)
+        if (quantity > left) throw new LocalDataError(left > 0 ? `Only ${left} of ${item.product_name} can still be returned.` : `${item.product_name} has already been returned.`, 409)
+        return { item, quantity, amount: roundMoney(item.unit_price * quantity * paidShare) }
+      })
+
+      const total = Number(sale.total)
+      const alreadyRefunded = Number(sale.refunded)
+      const everythingBack = found.items.every((item) => roundQuantity(item.quantity - item.returned_quantity - (lines.find((line) => line.item === item)?.quantity ?? 0)) <= 0)
+      // The last return settles the sale exactly, whatever the rounding on earlier ones.
+      const amount = everythingBack ? roundMoney(total - alreadyRefunded) : Math.min(roundMoney(lines.reduce((sum, line) => sum + line.amount, 0)), roundMoney(total - alreadyRefunded))
+      const cost = roundMoney(lines.reduce((sum, line) => sum + line.item.cost_price * line.quantity, 0))
+
+      // Lock the products in a fixed order, as sales do.
+      await connection.query('SELECT id FROM products WHERE shop_id = ? AND id IN (?) ORDER BY id FOR UPDATE', [shopId, ids])
+
+      let khataAmount = 0
+      if (sale.customer_id && Number(sale.credit_amount) > 0) {
+        const [[previous]] = await connection.query<RowDataPacket[]>('SELECT COALESCE(SUM(khata_amount), 0) AS khata FROM sale_returns WHERE sale_id = ?', [saleId])
+        const [[customer]] = await connection.query<RowDataPacket[]>('SELECT balance FROM customers WHERE id = ? FOR UPDATE', [sale.customer_id])
+        const unpaidOnSale = roundMoney(Number(sale.credit_amount) - Number(previous.khata))
+        khataAmount = roundMoney(Math.max(0, Math.min(amount, unpaidOnSale, Number(customer?.balance ?? 0))))
+      }
+
+      const id = randomUUID()
+      const now = new Date()
+      const label = `Return on sale #${sale.number}`
+      await connection.query(
+        'INSERT INTO sale_returns (id, shop_id, sale_id, client_id, amount, khata_amount, refund_method, cost, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [id, shopId, saleId, input.client_id ?? null, amount, khataAmount, sale.payment_method === 'card' ? 'card' : 'cash', cost, input.reason?.trim() || null, actorId, now],
+      )
+      for (const { item, quantity, amount: lineAmount } of lines) {
+        await connection.query(
+          'INSERT INTO sale_return_items (id, return_id, product_id, product_name, quantity, unit_price, cost_price, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [randomUUID(), id, item.product_id, item.product_name, quantity, item.unit_price, item.cost_price, lineAmount],
+        )
+        await connection.query('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE shop_id = ? AND id = ?', [quantity, now, shopId, item.product_id])
+        await connection.query('INSERT INTO stock_moves (id, shop_id, product_id, delta, reason, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [randomUUID(), shopId, item.product_id, quantity, label, actorId, now])
+      }
+      await connection.query('UPDATE sales SET refunded = refunded + ? WHERE id = ?', [amount, saleId])
+      if (khataAmount > 0) {
+        await connection.query('UPDATE customers SET balance = balance - ?, updated_at = ? WHERE id = ?', [khataAmount, now, sale.customer_id])
+        await connection.query(
+          "INSERT INTO customer_ledger (id, shop_id, customer_id, kind, amount, sale_id, note, created_by, created_at) VALUES (?, ?, ?, 'return', ?, ?, ?, ?, ?)",
+          [randomUUID(), shopId, sale.customer_id, -khataAmount, saleId, label, actorId, now],
+        )
+      }
+      return (await getLocalSale(shopId, saleId, connection))!
+    })
+  } catch (error) {
+    // Two requests with the same client_id raced; the first one recorded the return.
+    if (input.client_id && isDbError(error, ER_DUP_ENTRY) && error.message.includes('sale_returns_shop_client_uq')) {
+      const sale = await getLocalSale(shopId, saleId)
+      if (sale) return sale
+    }
+    throw error
+  }
+}
+
+const roundQuantity = (value: number) => Math.round(value * 1000) / 1000
 
 export async function getLocalDashboardStats(shopId: string, timezone: string) {
   const pool = await getPool()
@@ -755,7 +1007,12 @@ export async function getLocalDashboardStats(shopId: string, timezone: string) {
   )
   const [lowRows] = await pool.query<RowDataPacket[]>(`SELECT ${PRODUCT_COLUMNS} FROM products WHERE shop_id = ? AND is_active = 1 AND stock_quantity <= reorder_level ORDER BY name`, [shopId])
   const [recentRows] = await pool.query<RowDataPacket[]>(`SELECT ${SALE_COLUMNS} FROM ${SALE_FROM} WHERE sales.shop_id = ? AND sales.created_at >= ? ORDER BY sales.created_at DESC, sales.id LIMIT 10`, [shopId, startAt])
-  const [weekRows] = await pool.query<RowDataPacket[]>('SELECT total, created_at FROM sales WHERE shop_id = ? AND created_at >= ?', [shopId, weekStart])
+  // Returns count on the day the goods came back, as negative sales.
+  const [[returned]] = await pool.query<RowDataPacket[]>('SELECT COALESCE(SUM(amount), 0) AS amount, COALESCE(SUM(cost), 0) AS cost FROM sale_returns WHERE shop_id = ? AND created_at >= ?', [shopId, startAt])
+  const [weekRows] = await pool.query<RowDataPacket[]>(
+    'SELECT total, created_at FROM sales WHERE shop_id = ? AND created_at >= ? UNION ALL SELECT -amount, created_at FROM sale_returns WHERE shop_id = ? AND created_at >= ?',
+    [shopId, weekStart, shopId, weekStart],
+  )
   const [[credit]] = await pool.query<RowDataPacket[]>('SELECT COALESCE(SUM(balance), 0) AS owed, COUNT(*) AS customers FROM customers WHERE shop_id = ? AND is_active = 1 AND balance > 0', [shopId])
   // Target, today's expenses and what a new shop has set up so far (the getting-started checklist).
   const [[setup]] = await pool.query<RowDataPacket[]>(
@@ -776,8 +1033,9 @@ export async function getLocalDashboardStats(shopId: string, timezone: string) {
   }
   const lowProducts = lowRows.map(productFromRow)
   return {
-    sales: roundMoney(Number(totals.sales)),
-    profit: roundMoney(Number(margin.margin) - Number(totals.discounts)),
+    sales: roundMoney(Number(totals.sales) - Number(returned.amount)),
+    profit: roundMoney(Number(margin.margin) - Number(totals.discounts) - (Number(returned.amount) - Number(returned.cost))),
+    returnsToday: roundMoney(Number(returned.amount)),
     lowStock: lowProducts.length,
     salesCount: Number(totals.count),
     lowProducts,

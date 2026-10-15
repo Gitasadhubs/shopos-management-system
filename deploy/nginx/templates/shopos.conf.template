@@ -1,0 +1,104 @@
+# ShopOS behind nginx: HTTPS, security headers, the visitor's real IP, upload size and a ceiling on
+# sign-in traffic. Rendered when the container starts (envsubst of ${SHOPOS_*} only); the parts that
+# need logic are written by 40-shopos-tls.sh into /etc/nginx/shopos/. Guide: docs/nginx.md.
+
+# Visitor address: taken from a forwarding header only when the request comes from a trusted proxy
+# (Cloudflare's ranges when proxied), so visitors cannot fake it.
+include /etc/nginx/shopos/realip.conf;
+
+# Sign-in, sign-up and email links: generous for people, a wall for floods (the app has its own,
+# stricter per-email limits behind this).
+limit_req_zone $binary_remote_addr zone=shopos_auth:10m rate=30r/m;
+limit_req_status 429;
+
+upstream shopos_app {
+  server app:3000;
+  keepalive 16;
+}
+
+# Plain HTTP: certificate challenges, a health check for Docker, everything else to HTTPS.
+server {
+  listen ${SHOPOS_HTTP_PORT} default_server;
+  server_name _;
+  server_tokens off;
+
+  location ^~ /.well-known/acme-challenge/ {
+    root /var/www/acme;
+    default_type text/plain;
+  }
+
+  location = /nginx-health {
+    access_log off;
+    default_type text/plain;
+    return 200 "ok\n";
+  }
+
+  location / {
+    return 308 ${SHOPOS_PUBLIC_URL}$request_uri;
+  }
+}
+
+server {
+  listen ${SHOPOS_HTTPS_PORT} ssl default_server;
+  http2 on;
+  server_name ${SHOPOS_DOMAIN};
+  server_tokens off;
+
+  # ssl_certificate / ssl_certificate_key: Let's Encrypt, files (Cloudflare origin) or self-signed.
+  include /etc/nginx/shopos/ssl.conf;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_prefer_server_ciphers off;
+  ssl_session_cache shared:shopos_tls:10m;
+  ssl_session_timeout 1d;
+  ssl_session_tickets off;
+
+  # Set here, at server level, so every location inherits them (a location with its own add_header
+  # would silently drop these).
+  add_header Strict-Transport-Security "${SHOPOS_HSTS}" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header X-Frame-Options "SAMEORIGIN" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+  # Product photos and payment proofs are up to 5 MB (nginx's default of 1 MB would refuse them).
+  client_max_body_size 6m;
+
+  gzip on;
+  gzip_vary on;
+  gzip_proxied any;
+  gzip_min_length 1024;
+  gzip_types text/plain text/css text/xml application/json application/javascript application/xml application/manifest+json image/svg+xml;
+
+  proxy_http_version 1.1;
+  # The Host the browser sent, port included: the app checks it against the Origin of every change,
+  # and $host would drop a non-standard port (preprod's 8443) and fail that check.
+  proxy_set_header Host $http_host;
+  # After the real-IP step, $remote_addr is the visitor. Replacing (not appending) the header means a
+  # visitor's own X-Forwarded-For never reaches the app.
+  proxy_set_header X-Forwarded-For $remote_addr;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-Proto https;
+  proxy_set_header Connection "";
+  proxy_hide_header X-Powered-By;
+  proxy_connect_timeout 10s;
+  proxy_read_timeout 120s;
+  proxy_send_timeout 120s;
+
+  # Renewals reach the HTTPS side too when a proxy (Cloudflare) redirects HTTP to HTTPS.
+  location ^~ /.well-known/acme-challenge/ {
+    root /var/www/acme;
+    default_type text/plain;
+  }
+
+  location ~ ^/api/auth/(login|signup|setup|forgot-password|reset-password|resend-verification|verify-email|invite)$ {
+    limit_req zone=shopos_auth burst=30 nodelay;
+    proxy_pass http://shopos_app;
+  }
+
+  location / {
+    proxy_pass http://shopos_app;
+  }
+}
+
+# More sites on this server (a subdomain, the landing page): deploy/nginx/sites/*.conf.template,
+# applied with `shopos reload`. See deploy/nginx/sites/example.conf.template.sample.
+include /etc/nginx/conf.d/sites/*.conf;

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { LoaderCircle, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { ImageIcon, ImagePlus, LoaderCircle, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -22,6 +22,7 @@ type Product = {
   sale_price: number
   stock_quantity: number
   reorder_level: number
+  image_url: string | null
 }
 
 type ProductForm = {
@@ -34,16 +35,24 @@ type ProductForm = {
   sale_price: string
   stock_quantity: string
   reorder_level: string
+  image_url: string
 }
 
-const emptyForm: ProductForm = { name: '', sku: '', barcode: '', category: '', unit: 'pcs', cost_price: '0', sale_price: '0', stock_quantity: '0', reorder_level: '0' }
+const emptyForm: ProductForm = { name: '', sku: '', barcode: '', category: '', unit: 'pcs', cost_price: '0', sale_price: '0', stock_quantity: '0', reorder_level: '0', image_url: '' }
 const money = (value: number) => `₨ ${value.toLocaleString('en-PK')}`
+
+function ProductPhoto({ url, name, className }: { url: string | null; name: string; className: string }) {
+  return url
+    ? <img src={url} alt={`Photo of ${name}`} className={`${className} rounded-lg border bg-white object-cover`} />
+    : <span aria-hidden="true" className={`${className} flex items-center justify-center rounded-lg border border-dashed bg-stone-50 text-stone-300`}><ImageIcon className="size-1/2" /></span>
+}
 
 export default function LocalInventory() {
   const [products, setProducts] = useState<Product[]>([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [formOpen, setFormOpen] = useState(false)
@@ -95,6 +104,7 @@ export default function LocalInventory() {
       sale_price: String(product.sale_price),
       stock_quantity: String(product.stock_quantity),
       reorder_level: String(product.reorder_level),
+      image_url: product.image_url ?? '',
     })
     setError('')
     setSuccess('')
@@ -129,6 +139,28 @@ export default function LocalInventory() {
       setError(saveError instanceof Error ? saveError.message : 'Could not save product.')
     } finally {
       setSaving(false)
+    }
+  }
+
+  // The photo is stored as soon as it is picked; saving the product links it.
+  async function uploadPhoto(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    setUploading(true)
+    setError('')
+    try {
+      const data = new FormData()
+      data.append('file', file)
+      const response = await fetch('/api/products/image', { method: 'POST', body: data })
+      const body = await response.json().catch(() => ({ error: 'Could not upload the photo.' }))
+      if (!response.ok) throw new Error(body.error ?? 'Could not upload the photo.')
+      setForm((current) => ({ ...current, image_url: body.data.url }))
+    } catch (uploadError) {
+      playSound('error')
+      setError(uploadError instanceof Error ? uploadError.message : 'Could not upload the photo.')
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -204,7 +236,7 @@ export default function LocalInventory() {
             <table className="w-full min-w-[850px] text-sm">
               <thead><tr className="border-b text-left text-muted-foreground"><th className="p-4">Product</th><th className="p-4">Category</th><th className="p-4">Cost</th><th className="p-4">Sale price</th><th className="p-4">Stock</th><th className="p-4">Reorder</th><th className="p-4 text-right">Actions</th></tr></thead>
               <tbody>{products.map((product) => <tr key={product.id} className="border-b last:border-0">
-                <td className="p-4 font-medium">{product.name}<div className="text-xs text-muted-foreground">{product.sku || product.barcode || 'No SKU or barcode'}</div></td>
+                <td className="p-4 font-medium"><div className="flex items-center gap-3"><ProductPhoto url={product.image_url} name={product.name} className="size-10 shrink-0" /><div>{product.name}<div className="text-xs text-muted-foreground">{product.sku || product.barcode || 'No SKU or barcode'}</div></div></div></td>
                 <td className="p-4"><Badge variant="secondary">{product.category || 'Uncategorized'}</Badge></td>
                 <td className="p-4">{money(product.cost_price)}</td><td className="p-4 font-semibold">{money(product.sale_price)}</td>
                 <td className="p-4">{product.stock_quantity} {product.stock_quantity <= product.reorder_level && <Badge className="ml-1 bg-amber-100 text-amber-800">Low</Badge>}</td><td className="p-4">{product.reorder_level}</td>
@@ -224,10 +256,19 @@ export default function LocalInventory() {
       <Dialog open={formOpen} onOpenChange={setFormOpen}><DialogContent className="max-h-[90vh] overflow-y-auto">
         <DialogHeader><DialogTitle>{editingId ? 'Edit product' : 'Add product'}</DialogTitle></DialogHeader>
         <form onSubmit={saveProduct} className="grid gap-4 sm:grid-cols-2">
+          <div className="flex items-center gap-4 sm:col-span-2">
+            <ProductPhoto url={form.image_url || null} name={form.name || 'the product'} className="size-20 shrink-0" />
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" disabled={uploading} onClick={() => document.getElementById('product-photo')?.click()}>{uploading ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : <ImagePlus className="mr-2 size-4" />}{uploading ? 'Uploading…' : form.image_url ? 'Change photo' : 'Add photo'}</Button>
+              {form.image_url && <Button type="button" variant="ghost" disabled={uploading} onClick={() => setForm({ ...form, image_url: '' })}>Remove photo</Button>}
+              <input id="product-photo" aria-label="Product photo" type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={(event) => void uploadPhoto(event)} />
+              <p className="w-full text-xs text-muted-foreground">JPG, PNG or WebP, up to 5 MB.</p>
+            </div>
+          </div>
           <div className="sm:col-span-2">{field('name', 'Product name')}</div>{field('sku', 'SKU')}{field('barcode', 'Barcode')}{field('category', 'Category')}{field('unit', 'Unit')}
           {field('cost_price', 'Cost price', 'number', '0.01')}{field('sale_price', 'Sale price', 'number', '0.01')}{field('stock_quantity', 'Stock quantity', 'number', '0.01')}{field('reorder_level', 'Reorder level', 'number', '0.01')}
           {error && <p role="alert" className="text-sm text-rose-600 sm:col-span-2">{error}</p>}
-          <DialogFooter className="sm:col-span-2"><Button type="button" variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button><Button type="submit" disabled={saving} className="bg-emerald-600 hover:bg-emerald-700">{saving ? 'Saving…' : editingId ? 'Save changes' : 'Add product'}</Button></DialogFooter>
+          <DialogFooter className="sm:col-span-2"><Button type="button" variant="outline" onClick={() => setFormOpen(false)}>Cancel</Button><Button type="submit" disabled={saving || uploading} className="bg-emerald-600 hover:bg-emerald-700">{saving ? 'Saving…' : editingId ? 'Save changes' : 'Add product'}</Button></DialogFooter>
         </form>
       </DialogContent></Dialog>
 
