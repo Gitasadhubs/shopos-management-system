@@ -39,7 +39,14 @@ const serwist = new Serwist({
   precacheEntries: self.__SW_MANIFEST,
   runtimeCaching: [
     {
-      // Pages always come from the server so tills never show stale stock; offline, the fallback below applies.
+      // The till must open without a connection: the POS page comes from the server when it can, and
+      // from the copy saved on the last visit when it cannot. Its products come from the device
+      // (lib/offline/till.ts), and sales made offline are sent when the connection is back.
+      matcher: ({ request, url }: { request: Request; url: URL }) => request.mode === "navigate" && url.pathname === "/pos",
+      handler: new NetworkFirst({ cacheName: "till-page", networkTimeoutSeconds: 4 }),
+    },
+    {
+      // Other pages always come from the server so they never show stale data; offline, the fallback below applies.
       matcher: ({ request }: { request: Request }) => request.mode === "navigate",
       handler: new NetworkOnly(),
     },

@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, ArrowUpRight, LoaderCircle, Minus, Plus, ScanBarcode, Search, Volume2, VolumeX } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, CloudOff, LoaderCircle, Minus, Plus, RefreshCw, ScanBarcode, Search, Volume2, VolumeX } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -14,6 +14,7 @@ import { Confetti } from '@/components/confetti'
 import { Receipt, receiptLabel, ReturnBadge, type ReceiptSale, type ShopProfile } from '@/components/receipt'
 import { playSound, setSoundEnabled, useSoundEnabled } from '@/lib/sounds'
 import { randomId } from '@/lib/utils'
+import { discardQueued, isNetworkError, lastCatalog, listQueue, loadCatalog, queueSale, saveCatalog, syncQueue, type QueuedSale } from '@/lib/offline/till'
 
 type Product = {
   id: string
@@ -64,6 +65,31 @@ export default function POSPage() {
   const checkoutRef = useRef<() => void>(() => undefined)
   const [burst, setBurst] = useState(0)
   const sound = useSoundEnabled()
+  // Offline till (lib/offline/till.ts): the shop this device sells for, whether the server is reachable,
+  // and the sales waiting on this device to be sent.
+  const [shopId, setShopId] = useState<string | null>(null)
+  const [offline, setOffline] = useState(false)
+  const [queue, setQueue] = useState<QueuedSale[]>([])
+  const [syncing, setSyncing] = useState(false)
+  // Which lists on screen came straight from the server; only those may replace the device copy.
+  const fresh = useRef({ products: false, customers: false, shop: false })
+
+  // No connection: fill the till from the copy on this device, filtered the way the server would.
+  async function fillFromDevice() {
+    fresh.current = { products: false, customers: false, shop: false }
+    setOffline(true)
+    const catalog = shopId ? await loadCatalog(shopId) : await lastCatalog()
+    if (!catalog) return false
+    const query = search.trim().toLowerCase()
+    setShopId(catalog.shop_id)
+    setProducts(catalog.products.filter((product) => !query || [product.name, product.sku, product.barcode].some((value) => value?.toLowerCase().includes(query))))
+    setCustomers(catalog.customers)
+    setShop((current) => current ?? catalog.shop)
+    setError('')
+    return true
+  }
+  const fillRef = useRef(fillFromDevice)
+  useEffect(() => { fillRef.current = fillFromDevice })
 
   useEffect(() => {
     let active = true
@@ -72,9 +98,19 @@ export default function POSPage() {
       .then(async (response) => {
         const body = await response.json()
         if (!response.ok) throw new Error(body.error ?? 'Could not load products.')
-        if (active) setProducts(body.data ?? [])
+        if (!active) return
+        // Offline, an answer can still come from the service worker's cache; the device copy is newer
+        // (it already counts the sales waiting on this till), so it wins.
+        if (!navigator.onLine && await fillRef.current()) return
+        fresh.current.products = search === '' && navigator.onLine
+        setProducts(body.data ?? [])
+        setOffline(!navigator.onLine)
       })
-      .catch((loadError) => { if (active) setError(loadError instanceof Error ? loadError.message : 'Could not load products.') })
+      .catch(async (loadError) => {
+        if (!active) return
+        if (isNetworkError(loadError) && await fillRef.current()) return
+        setError(isNetworkError(loadError) ? 'No connection, and this till has no saved copy of the products yet. Open the POS once while online.' : loadError instanceof Error ? loadError.message : 'Could not load products.')
+      })
       .finally(() => { if (active) setLoadingProducts(false) })
     return () => { active = false }
   }, [search, refreshKey])
@@ -88,7 +124,7 @@ export default function POSPage() {
         if (!response.ok) throw new Error(body.error ?? 'Could not load sales history.')
         if (active) setSales(body.data ?? [])
       })
-      .catch((loadError) => { if (active) setError(loadError instanceof Error ? loadError.message : 'Could not load sales history.') })
+      .catch((loadError) => { if (active && !isNetworkError(loadError)) setError(loadError instanceof Error ? loadError.message : 'Could not load sales history.') })
       .finally(() => { if (active) setLoadingSales(false) })
     return () => { active = false }
   }, [refreshKey])
@@ -96,10 +132,50 @@ export default function POSPage() {
   // Customers (for khata) and the shop profile (for receipts) are extras: the till works without them.
   useEffect(() => {
     let active = true
-    fetch('/api/customers', { cache: 'no-store' }).then(async (response) => { if (response.ok && active) setCustomers((await response.json()).data ?? []) }).catch(() => undefined)
-    fetch('/api/settings', { cache: 'no-store' }).then(async (response) => { if (response.ok && active) setShop((await response.json()).data) }).catch(() => undefined)
+    fetch('/api/customers', { cache: 'no-store' }).then(async (response) => { if (!response.ok || !active) return; fresh.current.customers = navigator.onLine; setCustomers((await response.json()).data ?? []) }).catch(() => undefined)
+    fetch('/api/settings', { cache: 'no-store' }).then(async (response) => {
+      if (!response.ok || !active) return
+      const data = (await response.json()).data
+      fresh.current.shop = navigator.onLine
+      setShop(data)
+      if (data?.id) setShopId(data.id)
+    }).catch(() => undefined)
     return () => { active = false }
   }, [refreshKey])
+
+  // Keep the device copy fresh while online (the full list only, never a search result).
+  useEffect(() => { if (shopId && fresh.current.products) void saveCatalog(shopId, { products }).catch(() => undefined) }, [shopId, products])
+  useEffect(() => { if (shopId && fresh.current.customers) void saveCatalog(shopId, { customers }).catch(() => undefined) }, [shopId, customers])
+  useEffect(() => { if (shopId && shop && fresh.current.shop) void saveCatalog(shopId, { shop: { id: shopId, name: shop.name, phone: shop.phone, address: shop.address, receipt_footer: shop.receipt_footer } }).catch(() => undefined) }, [shopId, shop])
+
+  // Send waiting sales: now, when the browser says it is back online, and every 20 seconds.
+  async function syncNow() {
+    if (!shopId) return
+    setSyncing(true)
+    try {
+      const result = await syncQueue(shopId)
+      if (!result.offline && (result.synced || result.failed)) setRefreshKey((value) => value + 1)
+      if (result.synced) setOffline(false)
+      if (result.offline) setOffline(true)
+    } catch { /* tried again on the next tick */ }
+    finally {
+      setQueue(await listQueue(shopId).catch(() => []))
+      setSyncing(false)
+    }
+  }
+  const syncRef = useRef(syncNow)
+  useEffect(() => { syncRef.current = syncNow })
+  useEffect(() => {
+    if (!shopId) return
+    void syncRef.current()
+    const goOnline = () => { setRefreshKey((value) => value + 1); void syncRef.current() }
+    const goOffline = () => setOffline(true)
+    window.addEventListener('online', goOnline)
+    window.addEventListener('offline', goOffline)
+    const timer = window.setInterval(() => void syncRef.current(), 20_000)
+    return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); window.clearInterval(timer) }
+  }, [shopId])
+  const waiting = queue.filter((sale) => sale.status === 'pending').length
 
   const categories = useMemo(() => [...new Set(products.map((product) => product.category).filter((value): value is string => Boolean(value)))].sort(), [products])
   const visible = category ? products.filter((product) => product.category === category) : products
@@ -179,18 +255,19 @@ export default function POSPage() {
     setCheckoutLoading(true)
     setError('')
     checkoutId.current ??= randomId()
+    const sale = {
+      client_id: checkoutId.current,
+      items: cart.map(({ product, quantity }) => ({ product_id: product.id, quantity })),
+      discount: discountValue,
+      payment_method: paymentMethod,
+      ...(customerId ? { customer_id: customerId } : {}),
+      ...(receivedValue !== null && paymentMethod !== 'card' ? { amount_paid: receivedValue } : {}),
+    }
     try {
       const response = await fetch('/api/sales', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          client_id: checkoutId.current,
-          items: cart.map(({ product, quantity }) => ({ product_id: product.id, quantity })),
-          discount: discountValue,
-          payment_method: paymentMethod,
-          ...(customerId ? { customer_id: customerId } : {}),
-          ...(receivedValue !== null && paymentMethod !== 'card' ? { amount_paid: receivedValue } : {}),
-        }),
+        body: JSON.stringify(sale),
       })
       const body = await response.json()
       if (!response.ok) throw new Error(body.error ?? 'Sale could not be completed.')
@@ -201,6 +278,24 @@ export default function POSPage() {
       resetSale()
       setRefreshKey((value) => value + 1)
     } catch (checkoutError) {
+      // No connection: keep the sale on this till and send it later. The cashier carries on.
+      if (isNetworkError(checkoutError) && shopId) {
+        try {
+          await queueSale({ client_id: sale.client_id, shop_id: shopId, sold_at: new Date().toISOString(), body: sale, summary: { total, items: cart.map(({ product, quantity }) => ({ name: product.name, quantity })), customer_name: customer?.name ?? null } })
+          const sold = new Map(cart.map(({ product, quantity }) => [product.id, quantity]))
+          setProducts((items) => items.map((product) => (sold.has(product.id) ? { ...product, stock_quantity: Math.max(0, product.stock_quantity - sold.get(product.id)!) } : product)))
+          setOffline(true)
+          setSuccess(`Saved on this till · ${money(total)}. It will be sent as soon as the connection is back.`)
+          setLastSale(null)
+          playSound('sale')
+          setBurst((value) => value + 1)
+          resetSale()
+          setQueue(await listQueue(shopId))
+          // A lost reply is often a brief blip: try again soon rather than waiting for the next round.
+          window.setTimeout(() => void syncRef.current(), 3000)
+          return
+        } catch { /* the device could not store it either: show the error below */ }
+      }
       setError(checkoutError instanceof Error ? checkoutError.message : 'Sale could not be completed.')
       playSound('error')
       // Stock may have changed on another till; show current levels.
@@ -234,8 +329,9 @@ export default function POSPage() {
     <main className="min-h-screen bg-stone-50 p-4 sm:p-8">
       <div className="mx-auto max-w-7xl">
         <div className="no-print mb-6 flex flex-wrap items-center justify-between gap-4 shopos-rise">
-          <div><Link href="/dashboard" className="mb-3 inline-flex items-center gap-2 text-sm font-medium text-emerald-700"><ArrowLeft className="size-4" />Dashboard</Link><h1 className="text-3xl font-bold text-stone-900">Point of Sale</h1><p className="mt-1 text-sm text-muted-foreground">{shop?.name ? `${shop.name} · ` : ''}Products and sales are saved by the server.</p></div>
+          <div><Link href="/dashboard" className="mb-3 inline-flex items-center gap-2 text-sm font-medium text-emerald-700"><ArrowLeft className="size-4" />Dashboard</Link><h1 className="text-3xl font-bold text-stone-900">Point of Sale</h1><p className="mt-1 text-sm text-muted-foreground">{shop?.name ? `${shop.name} · ` : ''}{offline ? 'Offline: sales are kept on this till and sent when the connection is back.' : 'Products and sales are saved by the server.'}</p></div>
           <div className="flex items-center gap-2">
+            {(offline || waiting > 0) && <span role="status" className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${offline ? 'bg-amber-100 text-amber-900' : 'bg-sky-100 text-sky-900'}`}>{offline ? <CloudOff className="size-3.5" /> : <RefreshCw className={`size-3.5 ${syncing ? 'animate-spin' : ''}`} />}{offline ? 'Offline' : 'Sending'}{waiting > 0 ? ` · ${waiting} waiting` : ''}</span>}
             <Badge variant="outline" className="bg-white">{products.length} product{products.length === 1 ? '' : 's'}</Badge>
             <button type="button" aria-label={sound ? 'Mute sounds' : 'Turn sounds on'} title={sound ? 'Mute sounds' : 'Turn sounds on'} onClick={() => setSoundEnabled(!sound)} className="flex size-10 items-center justify-center rounded-lg bg-white text-stone-500 ring-1 ring-stone-200 hover:text-stone-900">{sound ? <Volume2 className="size-5" /> : <VolumeX className="size-5" />}</button>
           </div>
@@ -298,6 +394,13 @@ export default function POSPage() {
             {lastSale && <Receipt sale={lastSale} shop={shop} onPrint={() => window.print()} />}
           </div>
         </div>
+
+        {queue.length > 0 && <Card className="no-print mt-8 border-amber-200">
+          <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">Waiting to be sent ({queue.length})</CardTitle><Button variant="outline" size="sm" disabled={syncing} onClick={() => void syncNow()}><RefreshCw className={`mr-2 size-4 ${syncing ? 'animate-spin' : ''}`} />Send now</Button></CardHeader>
+          <CardContent><div className="divide-y">
+            {queue.map((sale) => <div key={sale.client_id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-semibold">{sale.status === 'failed' ? 'Not accepted by the server' : 'Saved on this till'}</p><p className="text-xs text-muted-foreground">{new Date(sale.sold_at).toLocaleString()} · {sale.summary.items.map((item) => `${item.name} × ${item.quantity}`).join(', ')}{sale.summary.customer_name ? ` · ${sale.summary.customer_name}` : ''}</p>{sale.error && <p className="mt-1 text-xs text-rose-700">{sale.error}</p>}</div><div className="flex items-center gap-3">{sale.status === 'failed' && <Button variant="outline" size="sm" onClick={async () => { await discardQueued(sale.client_id); if (shopId) setQueue(await listQueue(shopId)) }}>Discard</Button>}<Badge variant="secondary" className="capitalize">{sale.body.payment_method}</Badge><span className="text-sm font-bold">{money(sale.summary.total)}</span></div></div>)}
+          </div></CardContent>
+        </Card>}
 
         <Card className="no-print mt-8">
           <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">Recent sales</CardTitle>{shop && <Link href="/sales" className="text-sm font-medium text-emerald-700">All sales and returns <ArrowUpRight className="ml-1 inline size-4" /></Link>}</CardHeader>

@@ -15,6 +15,9 @@ const localSaleSchema = z.object({
   // credit: the unpaid part goes on the customer's khata.
   payment_method: z.enum(['cash', 'card', 'credit']).default('cash'),
   amount_paid: z.coerce.number().finite().nonnegative().max(1_000_000_000).optional(),
+  // Sales rung up while the till was offline (lib/offline/till.ts): when they happened.
+  offline: z.boolean().optional(),
+  sold_at: z.string().max(40).optional(),
 }).superRefine((sale, context) => {
   const productIds = sale.items.map((item) => item.product_id)
   if (new Set(productIds).size !== productIds.length) context.addIssue({ code: 'custom', message: 'Each product can only appear once in a sale.', path: ['items'] })

@@ -56,7 +56,18 @@ export type LocalSaleReturn = {
 export type LocalSaleReturnInput = { items: Array<{ product_id: string; quantity: number }>; reason?: string; client_id?: string }
 export type LocalSaleFilter = { search?: string; start?: Date; end?: Date; limit?: number; offset?: number }
 export type PaymentMethod = 'cash' | 'card' | 'credit'
-export type LocalSaleInput = { items: Array<{ product_id: string; quantity: number }>; discount?: number; payment_method: PaymentMethod; amount_paid?: number; client_id?: string; customer_id?: string | null }
+// offline: rung up on a till without a connection and synced later (see lib/offline/till.ts). The goods
+// have already left the shop, so the sale is recorded even if stock ran short meanwhile (stock stops at 0),
+// and it keeps the time it was made (sold_at, up to 14 days back).
+export type LocalSaleInput = { items: Array<{ product_id: string; quantity: number }>; discount?: number; payment_method: PaymentMethod; amount_paid?: number; client_id?: string; customer_id?: string | null; offline?: boolean; sold_at?: string }
+
+const OFFLINE_SALE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
+// When an offline sale happened; anything in the future or too old counts as now.
+export function offlineSaleTime(soldAt: string | undefined, now = new Date()) {
+  const time = soldAt ? Date.parse(soldAt) : Number.NaN
+  if (!Number.isFinite(time) || time > now.getTime() || now.getTime() - time > OFFLINE_SALE_MAX_AGE_MS) return now
+  return new Date(time)
+}
 
 export class LocalDataError extends Error {
   // code: machine-readable reason the UI can act on, e.g. 'unverified' to offer a new verification link.
@@ -785,7 +796,7 @@ export async function createLocalSale(shopId: string, input: LocalSaleInput, act
       const lines = input.items.map(({ product_id, quantity }) => {
         const product = productsById.get(product_id)
         if (!product) throw new LocalDataError('A product in this sale is no longer available.', 404)
-        if (quantity > product.stock_quantity) throw new LocalDataError(`Not enough stock for ${product.name}.`, 409)
+        if (quantity > product.stock_quantity && !input.offline) throw new LocalDataError(`Not enough stock for ${product.name}.`, 409)
         return { product, quantity, subtotal: roundMoney(product.sale_price * quantity) }
       })
 
@@ -813,7 +824,7 @@ export async function createLocalSale(shopId: string, input: LocalSaleInput, act
       await connection.query('UPDATE shops SET next_sale_number = ? WHERE id = ?', [number + 1, shopId])
 
       const id = randomUUID()
-      const createdAt = new Date()
+      const createdAt = input.offline ? offlineSaleTime(input.sold_at) : new Date()
       await connection.query(
         `INSERT INTO sales (id, shop_id, number, client_id, customer_id, total, discount, payment_method, amount_paid, change_given, credit_amount, created_by, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -824,7 +835,7 @@ export async function createLocalSale(shopId: string, input: LocalSaleInput, act
           'INSERT INTO sale_items (id, sale_id, product_id, product_name, quantity, unit_price, cost_price, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
           [randomUUID(), id, product.id, product.name, quantity, product.sale_price, product.cost_price, lineSubtotal],
         )
-        await connection.query('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?', [quantity, createdAt, product.id])
+        await connection.query('UPDATE products SET stock_quantity = GREATEST(stock_quantity - ?, 0), updated_at = ? WHERE id = ?', [quantity, new Date(), product.id])
       }
       if (creditAmount > 0) {
         await connection.query('UPDATE customers SET balance = balance + ?, updated_at = ? WHERE id = ?', [creditAmount, createdAt, input.customer_id])
