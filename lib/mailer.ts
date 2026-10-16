@@ -56,3 +56,12 @@ export function sendDayEndEmail(to: string, subject: string, text: string, rows:
   </div>`
   return transporter().sendMail({ from: process.env.SHOPOS_MAIL_FROM ?? 'ShopOS <no-reply@shopos.local>', to, subject, text, html })
 }
+
+// Partner (affiliate) program, lib/local-affiliates.ts. The private page link is the partner's only way in.
+export function sendAffiliateReceivedEmail(to: string, name: string, pageUrl: string) {
+  return send(to, 'We received your ShopOS partner application', [`Hi ${name},`, 'Thanks for applying to the ShopOS partner program. We review every application, usually within a day, and email you when it is approved.', 'Until then, the button below shows the status of your application. When you are approved we email you your referral link and a new private link to your partner page.'], { label: 'Open my partner page', url: pageUrl })
+}
+
+export function sendAffiliateApprovedEmail(to: string, name: string, referralLink: string, pageUrl: string) {
+  return send(to, 'You are a ShopOS partner', [`Hi ${name},`, 'Your partner application is approved.', `Share your referral link with shop owners: ${referralLink}`, 'Every shop that signs up through it and pays earns you 20% of its payments for its first 12 paid months. We pay what you earned once a month, to the account you gave us.'], { label: 'Open my partner page', url: pageUrl })
+}

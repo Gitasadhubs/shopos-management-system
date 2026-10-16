@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise'
 import { getPool, iso, likePattern, LocalDataError, PLAN_PRICE_PKR, roundMoney, TRIAL_DAYS, withTransaction, type Queryable } from '@/lib/local-db'
+import { addCommissionForPayment } from '@/lib/affiliate-core'
 import { fileUrl } from '@/lib/file-keys'
 import { addDays, dayKey, dayStart, DEFAULT_TIMEZONE } from '@/lib/time'
 
@@ -76,12 +77,12 @@ async function logEvent(db: Queryable, shopId: string, event: string, detail: st
 }
 
 // Every new shop starts on a free trial.
-export async function createShopWithTrial(connection: PoolConnection, input: ShopInput) {
+export async function createShopWithTrial(connection: PoolConnection, input: ShopInput & { referred_by?: string | null }) {
   const id = randomUUID()
   const now = new Date()
   await connection.query(
-    'INSERT INTO shops (id, name, phone, address, receipt_footer, timezone, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, input.name.trim(), input.phone?.trim() || null, input.address?.trim() || null, input.receipt_footer?.trim() || 'Thank you for shopping with us!', input.timezone ?? DEFAULT_TIMEZONE, now, now],
+    'INSERT INTO shops (id, name, phone, address, receipt_footer, timezone, referred_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, input.name.trim(), input.phone?.trim() || null, input.address?.trim() || null, input.receipt_footer?.trim() || 'Thank you for shopping with us!', input.timezone ?? DEFAULT_TIMEZONE, input.referred_by ?? null, now, now],
   )
   await connection.query(
     'INSERT INTO subscriptions (shop_id, plan, status, price_pkr, current_period_end, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -311,10 +312,13 @@ export async function recordSubscriptionPayment(actorId: string, shopId: string,
     const periodEnd = addMonths(base, input.months)
     const now = new Date()
     await connection.query('UPDATE subscriptions SET status = ?, current_period_end = ?, updated_at = ? WHERE shop_id = ?', ['active', periodEnd, now, shopId])
+    const paymentId = randomUUID()
     await connection.query(
       'INSERT INTO subscription_payments (id, shop_id, amount, method, reference, months, period_end, recorded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [randomUUID(), shopId, roundMoney(input.amount), input.method, input.reference?.trim() || null, input.months, periodEnd, actorId, now],
+      [paymentId, shopId, roundMoney(input.amount), input.method, input.reference?.trim() || null, input.months, periodEnd, actorId, now],
     )
+    // A shop that came through a partner's link earns that partner a commission (lib/affiliate-core.ts).
+    await addCommissionForPayment(connection, shopId, { id: paymentId, amount: roundMoney(input.amount), months: input.months }, now)
     // The proofs sent so far are what this payment answers.
     await connection.query('UPDATE payment_proofs SET reviewed_at = ? WHERE shop_id = ? AND reviewed_at IS NULL', [now, shopId])
     await logEvent(connection, shopId, 'payment', `₨${roundMoney(input.amount).toLocaleString('en-PK')} via ${input.method} · ${input.months} month${input.months === 1 ? '' : 's'} · paid until ${formatDay(periodEnd)}`, actorId)

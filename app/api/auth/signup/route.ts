@@ -18,6 +18,8 @@ export async function POST(request: Request) {
     full_name: nameField,
     email: emailField,
     password: passwordField,
+    // A partner's referral code from the link the visitor came through (?ref=CODE).
+    ref: z.string().trim().max(40).optional(),
   }))
   if (body instanceof NextResponse) return body
   try {

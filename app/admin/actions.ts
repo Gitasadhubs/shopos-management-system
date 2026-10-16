@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import { z } from 'zod'
 import { endSession } from '@/lib/local-auth'
 import { LocalDataError } from '@/lib/local-db'
+import { markAffiliatePaid, setAffiliateStatus } from '@/lib/local-affiliates'
 import { changeSubscription, recordSubscriptionPayment, type SubscriptionAction } from '@/lib/local-platform'
 import { clearSessionCookieOnAction, requireAdminForAction } from './session'
 
@@ -72,4 +73,39 @@ export async function adminSignOut() {
   await endSession(token)
   await clearSessionCookieOnAction()
   redirect('/login?signed_out=1')
+}
+
+// --- partner program (/admin/affiliates) --------------------------------------------------------
+
+function backToAffiliates(key: 'notice' | 'error', message: string): never {
+  revalidatePath('/admin/affiliates')
+  redirect(`/admin/affiliates?${key}=${encodeURIComponent(message)}`)
+}
+
+const affiliateId = z.string().uuid()
+
+export async function setAffiliateStatusAction(formData: FormData) {
+  await requireAdminForAction()
+  const id = affiliateId.parse(formData.get('affiliate_id'))
+  const status = z.enum(['approved', 'rejected']).parse(formData.get('status'))
+  try {
+    const affiliate = await setAffiliateStatus(id, status)
+    backToAffiliates('notice', status === 'approved' ? `${affiliate.name} is approved. Their referral link was emailed to ${affiliate.email}.` : `${affiliate.name}'s application was rejected.`)
+  } catch (error) {
+    if (error instanceof LocalDataError) backToAffiliates('error', error.message)
+    throw error
+  }
+}
+
+export async function markAffiliatePaidAction(formData: FormData) {
+  await requireAdminForAction()
+  const id = affiliateId.parse(formData.get('affiliate_id'))
+  const note = z.string().trim().max(200).parse(formData.get('note') ?? '')
+  try {
+    const amount = await markAffiliatePaid(id, note)
+    backToAffiliates('notice', `Payout of ₨${amount.toLocaleString('en-PK')} marked as paid.`)
+  } catch (error) {
+    if (error instanceof LocalDataError) backToAffiliates('error', error.message)
+    throw error
+  }
 }

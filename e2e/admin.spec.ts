@@ -28,7 +28,7 @@ test('the admin lands on the panel and has no shop screens or data', async ({ pa
 test('every admin page opens from the menu', async ({ page }) => {
   await page.goto('/admin')
   const nav = page.getByRole('navigation', { name: 'Admin' })
-  for (const [label, heading] of [['Shops', 'Shops'], ['Subscriptions', 'Subscriptions'], ['Payments', 'Payments'], ['Account', 'Account'], ['Overview', /Good (morning|afternoon|evening)/]] as const) {
+  for (const [label, heading] of [['Shops', 'Shops'], ['Subscriptions', 'Subscriptions'], ['Payments', 'Payments'], ['Affiliates', 'Affiliates'], ['Account', 'Account'], ['Overview', /Good (morning|afternoon|evening)/]] as const) {
     await nav.getByRole('link', { name: label }).click()
     await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()
   }

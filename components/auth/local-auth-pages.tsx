@@ -147,6 +147,18 @@ export function LocalSignupPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [created, setCreated] = useState('')
+  // A partner's referral code: from this link (?ref=CODE), or remembered from an earlier visit.
+  const params = useSearchParams()
+  const [ref, setRef] = useState('')
+  useEffect(() => {
+    const fromLink = params.get('ref')?.trim() ?? ''
+    try {
+      if (fromLink) localStorage.setItem('shopos-ref', fromLink)
+      setRef(fromLink || localStorage.getItem('shopos-ref') || '')
+    } catch {
+      setRef(fromLink)
+    }
+  }, [params])
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -154,7 +166,7 @@ export function LocalSignupPage() {
     if (problem) return setError(problem)
     setBusy(true)
     setError('')
-    const result = await post<{ email: string }>('/api/auth/signup', { shop_name: form.shop_name, full_name: form.full_name, phone: form.phone, email: form.email, password: form.password })
+    const result = await post<{ email: string }>('/api/auth/signup', { shop_name: form.shop_name, full_name: form.full_name, phone: form.phone, email: form.email, password: form.password, ...(ref ? { ref } : {}) })
     setBusy(false)
     if (result.ok || result.code === 'email_failed') setCreated(result.data?.email ?? form.email)
     if (!result.ok) setError(result.error ?? 'Could not create your shop.')

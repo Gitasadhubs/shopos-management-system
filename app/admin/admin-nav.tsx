@@ -2,13 +2,14 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { CreditCard, LayoutDashboard, Store, UserRound, Wallet } from 'lucide-react'
+import { CreditCard, Handshake, LayoutDashboard, Store, UserRound, Wallet } from 'lucide-react'
 
 const links = [
   { href: '/admin', label: 'Overview', icon: LayoutDashboard },
   { href: '/admin/shops', label: 'Shops', icon: Store },
   { href: '/admin/subscriptions', label: 'Subscriptions', icon: CreditCard },
   { href: '/admin/payments', label: 'Payments', icon: Wallet },
+  { href: '/admin/affiliates', label: 'Affiliates', icon: Handshake },
   { href: '/admin/account', label: 'Account', icon: UserRound },
 ]
 

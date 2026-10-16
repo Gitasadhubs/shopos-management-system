@@ -522,6 +522,56 @@ const migrations: string[][] = [
       CONSTRAINT payment_proofs_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE
     ) ${TABLE_OPTIONS}`,
   ],
+  [
+    // Affiliate (partner) program (lib/local-affiliates.ts). People apply at /partner; an admin approves
+    // them. A shop that signs up through an approved partner's link records them in shops.referred_by,
+    // and each payment from that shop in its first 12 paid months earns the partner a commission.
+    // token_hash: the partner's private page /partner/<token> (only the hash is stored).
+    `CREATE TABLE IF NOT EXISTS affiliates (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      code VARCHAR(16) NOT NULL,
+      name VARCHAR(120) NOT NULL,
+      email VARCHAR(254) NOT NULL,
+      phone VARCHAR(40) NOT NULL,
+      city VARCHAR(80) NULL,
+      country VARCHAR(80) NULL,
+      payout_method VARCHAR(20) NOT NULL,
+      payout_details VARCHAR(200) NOT NULL,
+      about VARCHAR(500) NULL,
+      status VARCHAR(12) NOT NULL DEFAULT 'pending',
+      token_hash CHAR(64) NOT NULL,
+      created_at DATETIME(3) NOT NULL,
+      updated_at DATETIME(3) NOT NULL,
+      approved_at DATETIME(3) NULL,
+      UNIQUE KEY affiliates_code_uq (code),
+      UNIQUE KEY affiliates_email_uq (email),
+      UNIQUE KEY affiliates_token_uq (token_hash),
+      KEY affiliates_status_idx (status, created_at),
+      CONSTRAINT affiliates_status_valid CHECK (status IN ('pending', 'approved', 'rejected')),
+      CONSTRAINT affiliates_payout_valid CHECK (payout_method IN ('paypal', 'wise', 'payoneer', 'bank', 'mobile_wallet', 'other'))
+    ) ${TABLE_OPTIONS}`,
+    `ALTER TABLE shops
+      ADD COLUMN IF NOT EXISTS referred_by CHAR(36) NULL AFTER timezone,
+      ADD KEY IF NOT EXISTS shops_referred_by_idx (referred_by),
+      ADD CONSTRAINT shops_referred_by_fk FOREIGN KEY IF NOT EXISTS (referred_by) REFERENCES affiliates (id) ON DELETE SET NULL`,
+    `CREATE TABLE IF NOT EXISTS affiliate_commissions (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      affiliate_id CHAR(36) NOT NULL,
+      shop_id CHAR(36) NOT NULL,
+      payment_id CHAR(36) NOT NULL,
+      months INT NOT NULL,
+      amount DECIMAL(14,2) NOT NULL,
+      created_at DATETIME(3) NOT NULL,
+      paid_at DATETIME(3) NULL,
+      payout_note VARCHAR(200) NULL,
+      UNIQUE KEY affiliate_commissions_payment_uq (payment_id),
+      KEY affiliate_commissions_affiliate_idx (affiliate_id, paid_at),
+      CONSTRAINT affiliate_commissions_affiliate_fk FOREIGN KEY (affiliate_id) REFERENCES affiliates (id) ON DELETE CASCADE,
+      CONSTRAINT affiliate_commissions_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      CONSTRAINT affiliate_commissions_payment_fk FOREIGN KEY (payment_id) REFERENCES subscription_payments (id) ON DELETE CASCADE,
+      CONSTRAINT affiliate_commissions_amount_positive CHECK (amount > 0)
+    ) ${TABLE_OPTIONS}`,
+  ],
 ]
 
 // Survives Next dev hot reloads, which would otherwise open a new pool per edit.

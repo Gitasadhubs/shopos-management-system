@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import { ER_DUP_ENTRY, getPool, isDbError, LocalDataError, withTransaction } from '@/lib/local-db'
+import { approvedAffiliateId } from '@/lib/affiliate-core'
 import { createShopWithTrial, subscriptionFromRow, type ShopSubscription } from '@/lib/local-platform'
 import { sendInviteEmail, sendPasswordResetEmail, sendVerificationEmail } from '@/lib/mailer'
 import { dummyPasswordHash, hashPassword, verifyPassword } from '@/lib/password'
@@ -76,7 +77,7 @@ async function attemptCount(db: Db, bucket: string, windowMinutes: number) {
   return Number(row.count)
 }
 
-async function recordAttempt(db: Db, bucket: string) {
+export async function recordAttempt(db: Db, bucket: string) {
   await db.query('INSERT INTO auth_attempts (bucket, created_at) VALUES (?, ?)', [bucket, new Date()])
   // Housekeeping without a scheduler: occasionally drop rows nothing reads any more.
   if (Math.random() < 0.02) {
@@ -86,14 +87,14 @@ async function recordAttempt(db: Db, bucket: string) {
   }
 }
 
-async function enforceLimit(db: Db, bucket: string, limit: number, windowMinutes: number) {
+export async function enforceLimit(db: Db, bucket: string, limit: number, windowMinutes: number) {
   if ((await attemptCount(db, bucket, windowMinutes)) >= limit) {
     throw new LocalDataError(`Too many attempts. Wait ${windowMinutes} minutes and try again.`, 429, 'rate_limited')
   }
 }
 
 const emailBucket = (kind: string, email: string) => `${kind}:email:${sha256(normalizeEmail(email)).slice(0, 40)}`
-const ipBucket = (kind: string, ip: string) => `${kind}:ip:${ip.slice(0, 60)}`
+export const ipBucket = (kind: string, ip: string) => `${kind}:ip:${ip.slice(0, 60)}`
 
 // --- sessions ------------------------------------------------------------------------------
 
@@ -227,7 +228,7 @@ export async function createPlatformAdmin(input: { email: string; full_name: str
 }
 
 // Public signup: a new shop on a free trial, with the person signing up as its owner.
-export async function signUpShop(input: { shop_name: string; phone?: string; full_name: string; email: string; password: string }, client: ClientInfo) {
+export async function signUpShop(input: { shop_name: string; phone?: string; full_name: string; email: string; password: string; ref?: string }, client: ClientInfo) {
   const pool = await getPool()
   const email = normalizeEmail(input.email)
   // New shops per IP per hour; tests raise it with SHOPOS_SIGNUP_LIMIT since they sign up many shops.
@@ -237,7 +238,8 @@ export async function signUpShop(input: { shop_name: string; phone?: string; ful
   try {
     const { user, token } = await withTransaction(async (connection) => {
       if (await findUserByEmail(connection, email)) throw new LocalDataError('Someone with this email already has an account. Sign in instead.', 409, 'email_taken')
-      const shopId = await createShopWithTrial(connection, { name: input.shop_name, phone: input.phone })
+      // Signed up through a partner's link: the shop is credited to them (unknown or unapproved codes are ignored).
+      const shopId = await createShopWithTrial(connection, { name: input.shop_name, phone: input.phone, referred_by: await approvedAffiliateId(connection, input.ref) })
       const id = randomUUID()
       const now = new Date()
       await connection.query(
