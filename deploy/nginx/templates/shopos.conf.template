@@ -8,7 +8,7 @@ include /etc/nginx/shopos/realip.conf;
 
 # Sign-in, sign-up and email links: generous for people, a wall for floods (the app has its own,
 # stricter per-email limits behind this).
-limit_req_zone $binary_remote_addr zone=shopos_auth:10m rate=30r/m;
+limit_req_zone $binary_remote_addr zone=shopos_auth:10m rate=${SHOPOS_AUTH_RATE};
 limit_req_status 429;
 
 upstream shopos_app {

@@ -167,6 +167,8 @@ services:
       # Space-separated proxy ranges to trust for the visitor's address (Cloudflare's on the cloud server).
       SHOPOS_TRUSTED_PROXIES: ${SHOPOS_TRUSTED_PROXIES:-127.0.0.1/32}
       SHOPOS_REAL_IP_HEADER: ${SHOPOS_REAL_IP_HEADER:-CF-Connecting-IP}
+      # Sign-in, sign-up and email-link requests allowed per visitor address (burst 30 on top).
+      SHOPOS_AUTH_RATE: ${SHOPOS_AUTH_RATE:-30r/m}
     volumes:
       - nginx-state:/etc/nginx/shopos/state
       - letsencrypt:/etc/letsencrypt:ro

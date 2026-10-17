@@ -75,6 +75,8 @@ test('the till opens with no connection and sells from the copy on the device', 
 
   await context.setOffline(false)
   await expect(page.getByText(/Waiting to be sent/)).toHaveCount(0, { timeout: 30_000 })
-  const product = ((await (await request.get(`/api/products?search=${encodeURIComponent(name)}`)).json()).data as Array<{ name: string; stock_quantity: number }>).find((item) => item.name === name)
-  expect(Number(product?.stock_quantity)).toBe(3)
+  // The sale reaches the server soon after the connection is back (on a fast machine, possibly after
+  // the "waiting" notice has already gone): wait for the stock to show it.
+  const stock = async () => Number(((await (await request.get(`/api/products?search=${encodeURIComponent(name)}`)).json()).data as Array<{ name: string; stock_quantity: number }>).find((item) => item.name === name)?.stock_quantity)
+  await expect.poll(stock, { timeout: 30_000 }).toBe(3)
 })
