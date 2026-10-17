@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { formatDate, pkr, requirePlatformAdmin, STATE_STYLES } from '@/lib/admin'
+import { formatDate, planPrice, requirePlatformAdmin, STATE_STYLES } from '@/lib/admin'
 import { listShopsForAdmin, type SubscriptionState } from '@/lib/local-platform'
 
 export const dynamic = 'force-dynamic'
@@ -22,11 +22,11 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
           <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500"><tr>{['Shop', 'Plan', 'Status', 'Period end', 'Days left', 'Price', ''].map((head) => <th key={head} className="px-5 py-3">{head}</th>)}</tr></thead>
           <tbody>{shops.map((shop) => <tr key={shop.id} className="border-t border-stone-100">
             <td className="px-5 py-4 font-semibold">{shop.name}<p className="text-xs font-normal text-stone-500">{shop.owner_email}</p></td>
-            <td className="px-5 py-4 capitalize">{shop.subscription.plan}</td>
+            <td className="px-5 py-4">{shop.subscription.plan_name}{shop.subscription.provider === 'paddle' && <span className="ml-1.5 rounded bg-sky-100 px-1.5 text-xs text-sky-800">card{shop.subscription.cancel_at_period_end ? ', ending' : ''}</span>}</td>
             <td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${STATE_STYLES[shop.subscription.state]}`}>{shop.subscription.state}</span></td>
             <td className="px-5 py-4 text-stone-600">{formatDate(shop.subscription.current_period_end)}</td>
             <td className="px-5 py-4 tabular-nums">{shop.subscription.state === 'trialing' || shop.subscription.state === 'active' ? shop.subscription.days_left : '—'}</td>
-            <td className="px-5 py-4">{pkr(shop.subscription.price_pkr)}</td>
+            <td className="px-5 py-4">{planPrice(shop.subscription)}</td>
             <td className="px-5 py-4 text-right"><Link href={`/admin/shops/${shop.id}`} className="font-semibold text-emerald-700">Manage</Link></td>
           </tr>)}</tbody>
         </table> : <p className="p-10 text-center text-sm text-stone-500">No subscriptions{state !== 'all' ? ` are ${state}` : ' yet'}.</p>}

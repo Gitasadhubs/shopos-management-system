@@ -1,11 +1,13 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { getPartnerPage, PAYOUT_METHODS, PROGRAM } from '@/lib/local-affiliates'
+import { formatTotals, type MoneyTotals } from '@/lib/money'
 
 export const metadata = { title: 'My ShopOS partner page', robots: { index: false, follow: false } }
 export const dynamic = 'force-dynamic'
 
-const pkr = (value: number) => `₨${value.toLocaleString('en-PK', { maximumFractionDigits: 2 })}`
+// Earnings are per currency (a commission keeps the currency of the payment it came from).
+const money = (value: MoneyTotals) => formatTotals(value)
 const day = (value: string) => new Date(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 const STATE: Record<string, [string, string]> = {
   trialing: ['On free trial', 'bg-sky-100 text-sky-800'],
@@ -39,7 +41,7 @@ export default async function PartnerDashboard({ params }: { params: Promise<{ t
           </div>
 
           <div className="mt-6 grid gap-4 sm:grid-cols-4">
-            {[['Shops', String(shops.length), 'bg-white'], ['Paying now', String(paying), 'bg-white'], ['Owed to you', pkr(data.owed), 'bg-amber-50'], ['Paid to you', pkr(data.paid), 'bg-emerald-50']].map(([label, value, tone]) => <div key={label} className={`rounded-2xl border border-stone-200 p-5 ${tone}`}><p className="text-sm text-stone-600">{label}</p><p className="mt-1 text-2xl font-bold tabular-nums">{value}</p></div>)}
+            {[['Shops', String(shops.length), 'bg-white'], ['Paying now', String(paying), 'bg-white'], ['Owed to you', money(data.owed), 'bg-amber-50'], ['Paid to you', money(data.paid), 'bg-emerald-50']].map(([label, value, tone]) => <div key={label} className={`rounded-2xl border border-stone-200 p-5 ${tone}`}><p className="text-sm text-stone-600">{label}</p><p className="mt-1 text-2xl font-bold tabular-nums">{value}</p></div>)}
           </div>
 
           <div className="mt-6 overflow-x-auto rounded-2xl border border-stone-200 bg-white shadow-sm">
@@ -50,14 +52,14 @@ export default async function PartnerDashboard({ params }: { params: Promise<{ t
                 <td className="px-5 py-3 text-stone-600">{day(shop.signed_up)}</td>
                 <td className="px-5 py-3"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${STATE[shop.state]?.[1] ?? ''}`}>{STATE[shop.state]?.[0] ?? shop.state}</span></td>
                 <td className="px-5 py-3 tabular-nums">{shop.paid_months}</td>
-                <td className="px-5 py-3 font-semibold tabular-nums">{pkr(shop.earned)}</td>
+                <td className="px-5 py-3 font-semibold tabular-nums">{money(shop.earned)}</td>
               </tr>)}</tbody>
             </table> : <p className="p-8 text-center text-sm text-stone-500">No shops yet. Share your link with shop owners you know.</p>}
           </div>
 
           {data.payouts.length > 0 && <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
             <h2 className="font-bold">Payouts</h2>
-            <ul className="mt-3 divide-y text-sm">{data.payouts.map((payout) => <li key={payout.paid_at} className="flex justify-between gap-4 py-2"><span className="text-stone-600">{day(payout.paid_at)}{payout.note ? ` · ${payout.note}` : ''}</span><b className="tabular-nums">{pkr(payout.amount)}</b></li>)}</ul>
+            <ul className="mt-3 divide-y text-sm">{data.payouts.map((payout) => <li key={payout.paid_at} className="flex justify-between gap-4 py-2"><span className="text-stone-600">{day(payout.paid_at)}{payout.note ? ` · ${payout.note}` : ''}</span><b className="tabular-nums">{money(payout.amount)}</b></li>)}</ul>
           </div>}
         </>}
         <p className="mt-8 text-xs text-stone-500">This page is private: anyone with its link can see it. Lost the link? Use Partner sign in on getshopos.online/partners. Payouts go to your {PAYOUT_METHODS[affiliate.payout_method]} account on file.</p>

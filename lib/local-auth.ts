@@ -1,8 +1,9 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import { ER_DUP_ENTRY, getPool, isDbError, LocalDataError, withTransaction } from '@/lib/local-db'
+import { ER_DUP_ENTRY, getPool, isDbError, LocalDataError, withTransaction, type Queryable } from '@/lib/local-db'
 import { approvedAffiliateId } from '@/lib/affiliate-core'
-import { createShopWithTrial, subscriptionFromRow, type ShopSubscription } from '@/lib/local-platform'
+import { createShopWithTrial, SUBSCRIPTION_COLUMNS, subscriptionFromRow, type ShopSubscription } from '@/lib/local-platform'
+import { PLANS, type PlanId } from '@/lib/plans'
 import { sendInviteEmail, sendPasswordResetEmail, sendVerificationEmail } from '@/lib/mailer'
 import { dummyPasswordHash, hashPassword, verifyPassword } from '@/lib/password'
 import type { Role } from '@/lib/permissions'
@@ -117,8 +118,7 @@ export async function getSessionUser(token: string | undefined): Promise<Session
   const pool = await getPool()
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT ${USER_COLUMNS.split(', ').map((column) => `users.${column}`).join(', ')}, sessions.last_seen_at AS session_seen_at,
-       shops.name AS shop_name, shops.timezone AS shop_timezone,
-       subscriptions.plan AS sub_plan, subscriptions.status AS sub_status, subscriptions.price_pkr AS sub_price, subscriptions.current_period_end AS sub_period_end
+       shops.name AS shop_name, shops.timezone AS shop_timezone, ${SUBSCRIPTION_COLUMNS}
      FROM sessions JOIN users ON users.id = sessions.user_id
      LEFT JOIN shops ON shops.id = users.shop_id
      LEFT JOIN subscriptions ON subscriptions.shop_id = users.shop_id
@@ -361,12 +361,26 @@ export async function listStaff(actor: SessionUser) {
   }
 }
 
+// A plan with a staff limit (Starter: 3) counts active staff accounts plus open invitations; the owner is
+// not counted. Shops already over it (after moving down a plan) keep their staff but cannot add more.
+async function assertStaffRoom(db: Queryable, shop: NonNullable<SessionUser['shop']>) {
+  const limit = PLANS[shop.subscription.plan as PlanId]?.staffLimit
+  if (limit === null || limit === undefined) return
+  const [[row]] = await db.query<RowDataPacket[]>(
+    `SELECT (SELECT COUNT(*) FROM users WHERE shop_id = ? AND role <> 'owner' AND is_active = 1)
+          + (SELECT COUNT(*) FROM email_tokens WHERE shop_id = ? AND purpose = 'invite' AND used_at IS NULL AND expires_at > ?) AS n`,
+    [shop.id, shop.id, new Date()],
+  )
+  if (Number(row.n) >= limit) throw new LocalDataError(`The ${PLANS[shop.subscription.plan as PlanId].name} plan includes up to ${limit} staff. Move to Growth in Billing for unlimited staff, or disable someone first.`, 403, 'plan_limit')
+}
+
 export async function inviteStaff(actor: SessionUser, input: { email: string; role: 'manager' | 'cashier'; full_name?: string }) {
   const shop = ownerShop(actor)
   const pool = await getPool()
   const email = normalizeEmail(input.email)
   await enforceLimit(pool, `invite:user:${actor.id}`, 30, 60)
   if (await findUserByEmail(pool, email)) throw new LocalDataError('Someone with this email already has an account.', 409, 'email_taken')
+  await assertStaffRoom(pool, shop)
   await recordAttempt(pool, `invite:user:${actor.id}`)
   const token = await issueToken(pool, 'invite', { email, shop_id: shop.id, role: input.role, full_name: input.full_name?.trim() || null, created_by: actor.id })
   await mailOrFail(sendInviteEmail(email, actor.full_name, shop.name, input.role, token), 'The invitation was saved, but the email could not be sent. Check the mail settings and send the invitation again.')
@@ -421,6 +435,7 @@ export async function updateStaff(actor: SessionUser, userId: string, changes: {
     const now = new Date()
     if (changes.role) await connection.query('UPDATE users SET role = ?, updated_at = ? WHERE id = ?', [changes.role, now, userId])
     if (changes.is_active !== undefined) {
+      if (changes.is_active && !target.is_active) await assertStaffRoom(connection, shop)
       await connection.query('UPDATE users SET is_active = ?, updated_at = ? WHERE id = ?', [changes.is_active ? 1 : 0, now, userId])
       // Disabling takes effect immediately on every device.
       if (!changes.is_active) await connection.query('DELETE FROM sessions WHERE user_id = ?', [userId])

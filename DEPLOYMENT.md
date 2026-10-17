@@ -33,13 +33,15 @@ One install serves many shops. Each shop's data is kept apart from every other s
   admin**: you, running the service. The admin belongs to no shop and works in the admin panel at
   `/admin` (Overview, Shops, Subscriptions, Payments). Nobody else can see `/admin`; it is a 404 for them.
 - **Shops sign up** at `/signup` (linked from the sign-in page) with a shop name, their name, email and
-  password. They become that shop's **owner** and start a **14-day free trial** at ₨1,500/month.
+  password. They become that shop's **owner** and start a **14-day free trial**. On **Billing** they
+  then pay by card for Starter or Growth (USD, through Paddle; see "Card payments" below) or send
+  ₨1,500/month by transfer.
   New signups are limited to `SHOPOS_SIGNUP_LIMIT` per IP address per hour (default 10).
 - **Subscriptions** are managed by the admin from each shop's page:
   - **Record a payment** (amount, months, method, reference): adds the months on top of any time
     already paid and makes the shop active.
   - **Add days** (free time), **Suspend** / **Resume**, **End subscription now**, and a per-shop
-    **monthly price**.
+    **plan and price** for shops paying by transfer.
   - A shop whose trial or paid period has ended, or that is suspended, becomes **read-only**: its
     people can still sign in and see everything, but changes are refused until it is renewed.
   - Owners see their plan, payment history and how to pay on **Billing**. The bank and wallet details
@@ -152,6 +154,33 @@ then use **Forgot password**.
 - Logs: `docker compose -p shopos-prod logs -f app` (rotated at 10 MB × 5 files per service).
 - Full end-to-end suite against a disposable copy of this stack: `.\scripts\e2e.ps1 -Target preprod`.
 
+## Card payments (Paddle)
+
+Paddle (paddle.com) is the merchant of record for card plans: it runs the checkout, charges the card,
+adds and pays sales tax, sends receipts and pays out to you. ShopOS learns about each payment, renewal,
+plan change and cancellation from Paddle's webhook at `https://<SHOPOS_PUBLIC_URL>/api/billing/paddle`
+and updates the shop. Without the `SHOPOS_PADDLE_*` settings, Billing offers transfers only.
+
+1. Create a sandbox account at sandbox-vendors.paddle.com (test cards, no real money). In **Developer
+   tools → Authentication** make an API key and a client-side token.
+2. Create the products, prices and webhook (the app must be reachable at `APP_URL`):
+
+   ```sh
+   docker run --rm -e PADDLE_API_KEY=... -e PADDLE_ENV=sandbox -e APP_URL=https://app.example.com \
+     -v "$PWD/scripts:/scripts:ro" node:22-alpine node /scripts/paddle-setup.mjs
+   ```
+
+   It prints the `SHOPOS_PADDLE_*` lines. Put them and the client-side token in `.env.production`.
+3. In Paddle, **Checkout → Checkout settings**: set the default payment link to `<app>/billing`, and
+   approve your domain. Then restart: `docker compose -p shopos-prod --env-file .env.production up -d`.
+4. Test on Billing with card `4242 4242 4242 4242`, any future date, any CVC. The plan turns active
+   within seconds; the admin shop page lists the webhook events.
+5. For real money, apply for a live Paddle account (it reviews the website, which needs pricing,
+   Terms, Privacy and Refund pages), then repeat steps 1–3 with the live account and `PADDLE_ENV=production`.
+
+Prices are set in Paddle and shown from `lib/plans.ts`; keep the two equal. Only USD prices are
+expected (payments in another currency extend the plan but are not booked).
+
 ## Day-end reports (email and WhatsApp)
 
 Every shop has a **Day end** page: sales, profit, expenses, khata and the cash expected in the drawer,
@@ -194,6 +223,7 @@ leave on: each report is claimed by one instance).
 
 ## Not covered yet
 
-- Payments are recorded by hand in the admin panel; there is no online card or wallet checkout.
+- Transfer (PKR) payments are recorded by hand in the admin panel; there is no online wallet checkout.
+- Refunds are made in Paddle; ShopOS does not react to them by itself (see docs/admin-guide.md).
 - No emails are sent about trials ending; owners see a banner in the app for the last 3 days.
 - Off-machine backup copies, monitoring and alerting are up to the host.

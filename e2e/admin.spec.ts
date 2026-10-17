@@ -60,7 +60,7 @@ test('recording a payment activates the shop and shows on its Billing page', asy
   await openShop(page, shop.shopId)
   await expect(page.getByText('trialing', { exact: true })).toBeVisible()
 
-  await page.getByLabel('Amount received (₨)').fill('3000')
+  await page.getByLabel('Amount received').fill('3000')
   await page.getByLabel('Months').fill('2')
   await page.getByLabel('Method').selectOption('jazzcash')
   await page.getByLabel('Reference').fill('JC-778899')
@@ -84,7 +84,7 @@ test('recording a payment activates the shop and shows on its Billing page', asy
   await ownerPage.goto('/billing')
   await expect(ownerPage.getByRole('main').getByRole('heading', { name: 'Billing' })).toBeVisible()
   await expect(ownerPage.getByText(/^Paid until /)).toBeVisible()
-  await expect(ownerPage.getByRole('row', { name: /JC-778899/ })).toContainText('₨ 3,000')
+  await expect(ownerPage.getByRole('row', { name: /JC-778899/ })).toContainText('₨3,000')
   await expect(ownerPage.getByRole('banner').getByRole('link', { name: 'Active plan' })).toBeVisible()
   await owner.close()
   await shop.context.dispose()
@@ -149,16 +149,24 @@ test('ending a subscription blocks changes and adding days restores it', async (
   await shop.context.dispose()
 })
 
-test('the monthly price can be changed per shop', async ({ page }) => {
+test('the plan and price can be changed per shop', async ({ page }) => {
   const shop = await signUpShop(uniqueName('Discount Shop'))
   await openShop(page, shop.shopId)
-  await page.getByLabel('Monthly price (₨)').fill('999')
-  await page.getByRole('button', { name: 'Save price' }).click()
-  await expect(page.getByRole('status')).toHaveText('Monthly price updated.')
-  await expect(page.getByText('₨999 / month')).toBeVisible()
-  expect((await (await shop.context.get('/api/billing')).json()).data.shop.subscription.price_pkr).toBe(999)
+  await page.getByLabel('Price', { exact: true }).fill('999')
+  await page.getByRole('button', { name: 'Save plan' }).click()
+  await expect(page.getByRole('status')).toHaveText('Plan and price updated.')
+  await expect(page.getByText('Basic · ₨999/mo')).toBeVisible()
+  expect((await (await shop.context.get('/api/billing')).json()).data.shop.subscription).toMatchObject({ plan: 'basic', price: 999, currency: 'PKR', interval: 'month' })
   // The payment form now suggests the new price.
-  await expect(page.getByLabel('Amount received (₨)')).toHaveValue('999')
+  await expect(page.getByLabel('Amount received')).toHaveValue('999')
+
+  // A USD plan billed yearly, e.g. for a shop abroad paying by bank transfer.
+  await page.getByLabel('Plan', { exact: true }).selectOption('growth')
+  await page.getByLabel('Per', { exact: true }).selectOption('year')
+  await page.getByLabel('Price', { exact: true }).fill('190')
+  await page.getByRole('button', { name: 'Save plan' }).click()
+  await expect(page.getByText('Growth · $190/yr')).toBeVisible()
+  expect((await (await shop.context.get('/api/billing')).json()).data.shop.subscription).toMatchObject({ plan: 'growth', price: 190, currency: 'USD', interval: 'year', monthly_price: 15.83 })
   await shop.context.dispose()
 })
 

@@ -2,8 +2,9 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import type { RowDataPacket } from 'mysql2/promise'
 import { COMMISSION_MONTHS, COMMISSION_RATE } from '@/lib/affiliate-core'
 import { emailBucket, enforceLimit, ipBucket, normalizeEmail, recordAttempt, type ClientInfo } from '@/lib/local-auth'
-import { ER_DUP_ENTRY, getPool, iso, isDbError, LocalDataError, roundMoney, withTransaction } from '@/lib/local-db'
+import { ER_DUP_ENTRY, getPool, iso, isDbError, LocalDataError, withTransaction } from '@/lib/local-db'
 import { subscriptionState, type SubscriptionState } from '@/lib/local-platform'
+import { addTo, type MoneyTotals } from '@/lib/money'
 import { publicUrl, sendAffiliateApprovedEmail, sendAffiliateReceivedEmail, sendAffiliateSignInEmail } from '@/lib/mailer'
 
 // The partner (affiliate) program. Anyone applies at /partner; a platform admin approves them in
@@ -20,9 +21,10 @@ export type Affiliate = {
   id: string; code: string; name: string; email: string; phone: string; city: string | null; country: string | null; payout_method: PayoutMethod; payout_details: string
   about: string | null; status: AffiliateStatus; created_at: string; approved_at: string | null
 }
-export type AdminAffiliate = Affiliate & { shops: number; paying_shops: number; owed: number; paid: number }
-export type ReferredShop = { name: string; signed_up: string; state: SubscriptionState; paid_months: number; earned: number }
-export type PartnerPage = { affiliate: Affiliate; referral_link: string; signup_link: string; shops: ReferredShop[]; owed: number; paid: number; payouts: Array<{ paid_at: string; amount: number; note: string | null }> }
+// Money is per currency (commissions keep the currency of the payment they came from).
+export type AdminAffiliate = Affiliate & { shops: number; paying_shops: number; owed: MoneyTotals; paid: MoneyTotals }
+export type ReferredShop = { name: string; signed_up: string; state: SubscriptionState; paid_months: number; earned: MoneyTotals }
+export type PartnerPage = { affiliate: Affiliate; referral_link: string; signup_link: string; shops: ReferredShop[]; owed: MoneyTotals; paid: MoneyTotals; payouts: Array<{ paid_at: string; amount: MoneyTotals; note: string | null }> }
 
 export const PROGRAM = { rate: COMMISSION_RATE, months: COMMISSION_MONTHS }
 const SITE_URL = () => (process.env.SHOPOS_SITE_URL ?? 'https://getshopos.online').replace(/\/$/, '')
@@ -72,13 +74,26 @@ export async function listAffiliatesForAdmin(status?: AffiliateStatus) {
     `SELECT affiliates.*,
        (SELECT COUNT(*) FROM shops WHERE shops.referred_by = affiliates.id) AS shops,
        (SELECT COUNT(DISTINCT shop_id) FROM affiliate_commissions WHERE affiliate_commissions.affiliate_id = affiliates.id) AS paying_shops,
-       (SELECT COALESCE(SUM(amount), 0) FROM affiliate_commissions WHERE affiliate_id = affiliates.id AND paid_at IS NULL) AS owed,
-       (SELECT COALESCE(SUM(amount), 0) FROM affiliate_commissions WHERE affiliate_id = affiliates.id AND paid_at IS NOT NULL) AS paid
+       (SELECT COUNT(*) FROM affiliate_commissions WHERE affiliate_id = affiliates.id AND paid_at IS NULL) AS unpaid
      FROM affiliates ${status ? 'WHERE status = ?' : ''}
-     ORDER BY status = 'pending' DESC, owed DESC, created_at DESC LIMIT 500`,
+     ORDER BY status = 'pending' DESC, unpaid > 0 DESC, created_at DESC LIMIT 500`,
     status ? [status] : [],
   )
-  return rows.map((row): AdminAffiliate => ({ ...affiliateFromRow(row), shops: Number(row.shops), paying_shops: Number(row.paying_shops), owed: roundMoney(Number(row.owed)), paid: roundMoney(Number(row.paid)) }))
+  const ids = rows.map((row) => row.id as string)
+  const owed = new Map<string, MoneyTotals>()
+  const paid = new Map<string, MoneyTotals>()
+  if (ids.length) {
+    const [sums] = await pool.query<RowDataPacket[]>(
+      'SELECT affiliate_id, currency, paid_at IS NULL AS unpaid, SUM(amount) AS total FROM affiliate_commissions WHERE affiliate_id IN (?) GROUP BY affiliate_id, currency, paid_at IS NULL',
+      [ids],
+    )
+    for (const row of sums) {
+      const target = Number(row.unpaid) ? owed : paid
+      if (!target.has(row.affiliate_id)) target.set(row.affiliate_id, {})
+      addTo(target.get(row.affiliate_id)!, row.currency, Number(row.total))
+    }
+  }
+  return rows.map((row): AdminAffiliate => ({ ...affiliateFromRow(row), shops: Number(row.shops), paying_shops: Number(row.paying_shops), owed: owed.get(row.id) ?? {}, paid: paid.get(row.id) ?? {} }))
 }
 
 // Approving emails the partner their link. A fresh private-page token goes with it (the old one stops working),
@@ -121,10 +136,10 @@ export async function setAffiliateStatus(affiliateId: string, status: 'approved'
 // Everything owed to a partner is marked paid with the payout's note (e.g. "JazzCash TID 12345").
 export async function markAffiliatePaid(affiliateId: string, note: string) {
   return withTransaction(async (connection) => {
-    const [[owed]] = await connection.query<RowDataPacket[]>('SELECT COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS n FROM affiliate_commissions WHERE affiliate_id = ? AND paid_at IS NULL FOR UPDATE', [affiliateId])
-    if (!Number(owed.n)) throw new LocalDataError('Nothing is owed to this partner.', 409)
+    const [owed] = await connection.query<RowDataPacket[]>('SELECT amount, currency FROM affiliate_commissions WHERE affiliate_id = ? AND paid_at IS NULL FOR UPDATE', [affiliateId])
+    if (!owed.length) throw new LocalDataError('Nothing is owed to this partner.', 409)
     await connection.query('UPDATE affiliate_commissions SET paid_at = ?, payout_note = ? WHERE affiliate_id = ? AND paid_at IS NULL', [new Date(), note.trim() || null, affiliateId])
-    return roundMoney(Number(owed.amount))
+    return owed.reduce<MoneyTotals>((totals, row) => addTo(totals, row.currency, Number(row.amount)), {})
   })
 }
 
@@ -136,27 +151,33 @@ export async function getPartnerPage(token: string): Promise<PartnerPage | null>
   if (!row) return null
   const affiliate = affiliateFromRow(row)
   const [shops] = await pool.query<RowDataPacket[]>(
-    `SELECT shops.name, shops.created_at, subscriptions.status, subscriptions.current_period_end,
-       (SELECT COALESCE(SUM(months), 0) FROM subscription_payments WHERE subscription_payments.shop_id = shops.id) AS paid_months,
-       (SELECT COALESCE(SUM(amount), 0) FROM affiliate_commissions WHERE affiliate_commissions.shop_id = shops.id AND affiliate_id = ?) AS earned
+    `SELECT shops.id, shops.name, shops.created_at, subscriptions.status, subscriptions.current_period_end,
+       (SELECT COALESCE(SUM(months), 0) FROM subscription_payments WHERE subscription_payments.shop_id = shops.id) AS paid_months
      FROM shops JOIN subscriptions ON subscriptions.shop_id = shops.id WHERE shops.referred_by = ? ORDER BY shops.created_at DESC`,
-    [affiliate.id, affiliate.id],
-  )
-  const [[totals]] = await pool.query<RowDataPacket[]>(
-    'SELECT COALESCE(SUM(CASE WHEN paid_at IS NULL THEN amount END), 0) AS owed, COALESCE(SUM(CASE WHEN paid_at IS NOT NULL THEN amount END), 0) AS paid FROM affiliate_commissions WHERE affiliate_id = ?',
     [affiliate.id],
   )
-  const [payouts] = await pool.query<RowDataPacket[]>(
-    'SELECT paid_at, SUM(amount) AS amount, MAX(payout_note) AS note FROM affiliate_commissions WHERE affiliate_id = ? AND paid_at IS NOT NULL GROUP BY paid_at ORDER BY paid_at DESC LIMIT 24',
-    [affiliate.id],
-  )
+  const [commissions] = await pool.query<RowDataPacket[]>('SELECT shop_id, amount, currency, paid_at, payout_note FROM affiliate_commissions WHERE affiliate_id = ? ORDER BY paid_at DESC', [affiliate.id])
+  const earned = new Map<string, MoneyTotals>()
+  const owed: MoneyTotals = {}
+  const paid: MoneyTotals = {}
+  const payouts = new Map<string, { paid_at: string; amount: MoneyTotals; note: string | null }>()
+  for (const row of commissions) {
+    if (!earned.has(row.shop_id)) earned.set(row.shop_id, {})
+    addTo(earned.get(row.shop_id)!, row.currency, Number(row.amount))
+    if (!row.paid_at) { addTo(owed, row.currency, Number(row.amount)); continue }
+    addTo(paid, row.currency, Number(row.amount))
+    // One payout marks all that was owed at once, so commissions sharing paid_at are one payout.
+    const key = iso(row.paid_at)
+    if (!payouts.has(key)) payouts.set(key, { paid_at: key, amount: {}, note: row.payout_note ?? null })
+    addTo(payouts.get(key)!.amount, row.currency, Number(row.amount))
+  }
   return {
     affiliate,
     referral_link: `${SITE_URL()}/?ref=${affiliate.code}`,
     signup_link: `${publicUrl('/signup')}?ref=${affiliate.code}`,
-    shops: shops.map((shop) => ({ name: shop.name, signed_up: iso(shop.created_at), state: subscriptionState(shop.status, shop.current_period_end), paid_months: Number(shop.paid_months), earned: roundMoney(Number(shop.earned)) })),
-    owed: roundMoney(Number(totals.owed)),
-    paid: roundMoney(Number(totals.paid)),
-    payouts: payouts.map((payout) => ({ paid_at: iso(payout.paid_at), amount: roundMoney(Number(payout.amount)), note: payout.note ?? null })),
+    shops: shops.map((shop) => ({ name: shop.name, signed_up: iso(shop.created_at), state: subscriptionState(shop.status, shop.current_period_end), paid_months: Number(shop.paid_months), earned: earned.get(shop.id) ?? {} })),
+    owed,
+    paid,
+    payouts: [...payouts.values()].slice(0, 24),
   }
 }

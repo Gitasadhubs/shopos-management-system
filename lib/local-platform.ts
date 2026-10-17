@@ -3,48 +3,78 @@ import type { PoolConnection, RowDataPacket } from 'mysql2/promise'
 import { getPool, iso, likePattern, LocalDataError, PLAN_PRICE_PKR, roundMoney, TRIAL_DAYS, withTransaction, type Queryable } from '@/lib/local-db'
 import { addCommissionForPayment } from '@/lib/affiliate-core'
 import { fileUrl } from '@/lib/file-keys'
+import { addTo, formatMoney, isCurrency, type Currency, type MoneyTotals } from '@/lib/money'
+import { isInterval, monthlyValue, planName, PLANS, type BillingInterval } from '@/lib/plans'
 import { addDays, dayKey, dayStart, DEFAULT_TIMEZONE } from '@/lib/time'
 
 // Shops and their subscriptions. Shop owners read their own; platform admins (role 'admin') manage all.
 
 export type SubscriptionState = 'trialing' | 'active' | 'suspended' | 'expired'
-export type ShopSubscription = { plan: string; state: SubscriptionState; price_pkr: number; current_period_end: string; days_left: number; can_write: boolean }
+// price is per interval, in currency. provider 'paddle': a card subscription that renews by itself
+// (cancel_at_period_end once the owner cancels it); 'manual': paid by transfer and recorded by an admin.
+export type ShopSubscription = {
+  plan: string; plan_name: string; state: SubscriptionState; price: number; currency: Currency; interval: BillingInterval; monthly_price: number
+  current_period_end: string; days_left: number; can_write: boolean
+  provider: 'manual' | 'paddle'; cancel_at_period_end: boolean; past_due: boolean
+}
 // report_*: the automatic day-end report (lib/day-end.ts).
 export type ShopReportSettings = { report_enabled: boolean; report_time: string; report_email: string | null; report_whatsapp: string | null; report_last_sent_on: string | null }
 export type LocalShop = { id: string; name: string; phone: string | null; address: string | null; receipt_footer: string | null; timezone: string; daily_target: number | null; created_at: string; subscription: ShopSubscription } & ShopReportSettings
 export type ShopInput = { name: string; phone?: string | null; address?: string | null; receipt_footer?: string | null; timezone?: string }
 // Settings saves only the fields it sends; anything left out keeps its value.
 export type ShopUpdate = Partial<ShopInput> & Partial<Omit<ShopReportSettings, 'report_last_sent_on'>> & { daily_target?: number | null }
-export type PaymentMethod = 'bank' | 'jazzcash' | 'easypaisa' | 'cash' | 'other'
-export type SubscriptionPayment = { id: string; shop_id: string; shop_name?: string; amount: number; method: string; reference: string | null; months: number; period_end: string; created_at: string }
+export type PaymentMethod = 'bank' | 'jazzcash' | 'easypaisa' | 'cash' | 'card' | 'other'
+export type SubscriptionPayment = { id: string; shop_id: string; shop_name?: string; amount: number; currency: Currency; method: string; reference: string | null; months: number; period_end: string; created_at: string }
 export type SubscriptionEvent = { id: string; event: string; detail: string | null; actor_name: string | null; created_at: string }
 // reviewed_at: when an admin recorded a payment after this proof arrived; null while waiting.
 export type PaymentProof = { id: string; shop_id: string; shop_name: string; url: string; content_type: string; size_bytes: number; note: string | null; uploaded_by_name: string | null; created_at: string; reviewed_at: string | null }
 
 const DAY = 86_400_000
 
+// A card renewal that fails is retried by Paddle for a few days; the shop keeps working meanwhile.
+export const CARD_GRACE_DAYS = 3
+
 // A trial or paid period that has run out is expired; suspension is the admin's switch.
-export function subscriptionState(status: string, periodEnd: Date | string, now = Date.now()): SubscriptionState {
+// graceMs: extra time after the period end before it counts as expired (renewing card plans).
+export function subscriptionState(status: string, periodEnd: Date | string, now = Date.now(), graceMs = 0): SubscriptionState {
   if (status === 'suspended') return 'suspended'
-  if (new Date(periodEnd).getTime() <= now) return 'expired'
+  if (new Date(periodEnd).getTime() + graceMs <= now) return 'expired'
   return status === 'active' ? 'active' : 'trialing'
 }
 
+// The subscription columns every shop query reads (lib/local-auth.ts reads them for the session too).
+export const SUBSCRIPTION_COLUMNS = `subscriptions.plan AS sub_plan, subscriptions.status AS sub_status, subscriptions.price AS sub_price,
+  subscriptions.currency AS sub_currency, subscriptions.billing_interval AS sub_interval, subscriptions.provider AS sub_provider,
+  subscriptions.provider_status AS sub_provider_status, subscriptions.cancel_at_period_end AS sub_cancel, subscriptions.current_period_end AS sub_period_end`
+
 export function subscriptionFromRow(row: RowDataPacket): ShopSubscription {
-  const state = subscriptionState(row.sub_status, row.sub_period_end)
+  const provider = row.sub_provider === 'paddle' ? 'paddle' : 'manual'
+  const cancel = Boolean(row.sub_cancel)
+  const renewing = provider === 'paddle' && !cancel && row.sub_status === 'active'
+  const state = subscriptionState(row.sub_status, row.sub_period_end, Date.now(), renewing ? CARD_GRACE_DAYS * DAY : 0)
+  const interval: BillingInterval = isInterval(row.sub_interval) ? row.sub_interval : 'month'
+  const price = Number(row.sub_price ?? PLAN_PRICE_PKR)
+  const plan = row.sub_plan ?? 'basic'
   return {
-    plan: row.sub_plan ?? 'basic',
+    plan,
+    plan_name: planName(plan),
     state,
-    price_pkr: Number(row.sub_price ?? PLAN_PRICE_PKR),
+    price,
+    currency: isCurrency(row.sub_currency) ? row.sub_currency : 'PKR',
+    interval,
+    monthly_price: monthlyValue(price, interval),
     current_period_end: iso(row.sub_period_end),
     days_left: Math.max(0, Math.ceil((new Date(row.sub_period_end).getTime() - Date.now()) / DAY)),
     can_write: state === 'trialing' || state === 'active',
+    provider,
+    cancel_at_period_end: cancel,
+    past_due: provider === 'paddle' && row.sub_provider_status === 'past_due',
   }
 }
 
 const SHOP_SELECT = `SELECT shops.id, shops.name, shops.phone, shops.address, shops.receipt_footer, shops.timezone, shops.created_at,
   shops.daily_target, shops.report_enabled, shops.report_time, shops.report_email, shops.report_whatsapp, shops.report_last_sent_on,
-  subscriptions.plan AS sub_plan, subscriptions.status AS sub_status, subscriptions.price_pkr AS sub_price, subscriptions.current_period_end AS sub_period_end
+  ${SUBSCRIPTION_COLUMNS}
   FROM shops JOIN subscriptions ON subscriptions.shop_id = shops.id`
 
 function shopFromRow(row: RowDataPacket): LocalShop {
@@ -72,7 +102,7 @@ export async function getShop(shopId: string, db?: Queryable) {
   return rows[0] ? shopFromRow(rows[0]) : null
 }
 
-async function logEvent(db: Queryable, shopId: string, event: string, detail: string | null, actorId: string | null) {
+export async function logEvent(db: Queryable, shopId: string, event: string, detail: string | null, actorId: string | null) {
   await db.query('INSERT INTO subscription_events (id, shop_id, event, detail, actor_id, created_at) VALUES (?, ?, ?, ?, ?, ?)', [randomUUID(), shopId, event, detail, actorId, new Date()])
 }
 
@@ -85,8 +115,8 @@ export async function createShopWithTrial(connection: PoolConnection, input: Sho
     [id, input.name.trim(), input.phone?.trim() || null, input.address?.trim() || null, input.receipt_footer?.trim() || 'Thank you for shopping with us!', input.timezone ?? DEFAULT_TIMEZONE, input.referred_by ?? null, now, now],
   )
   await connection.query(
-    'INSERT INTO subscriptions (shop_id, plan, status, price_pkr, current_period_end, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [id, 'basic', 'trialing', PLAN_PRICE_PKR, new Date(now.getTime() + TRIAL_DAYS * DAY), now, now],
+    'INSERT INTO subscriptions (shop_id, plan, status, price, currency, current_period_end, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, 'basic', 'trialing', PLAN_PRICE_PKR, 'PKR', new Date(now.getTime() + TRIAL_DAYS * DAY), now, now],
   )
   await logEvent(connection, id, 'trial_started', `${TRIAL_DAYS}-day free trial`, null)
   return id
@@ -118,6 +148,7 @@ function paymentFromRow(row: RowDataPacket): SubscriptionPayment {
     shop_id: row.shop_id,
     shop_name: row.shop_name ?? undefined,
     amount: Number(row.amount),
+    currency: isCurrency(row.currency) ? row.currency : 'PKR',
     method: row.method,
     reference: row.reference,
     months: Number(row.months),
@@ -197,18 +228,20 @@ export async function platformOverview() {
   const thisMonth = dayKey(DEFAULT_TIMEZONE).slice(0, 7)
   const monthStart = dayStart(DEFAULT_TIMEZONE, `${thisMonth}-01`)
   const sixMonthsAgo = dayStart(DEFAULT_TIMEZONE, `${addDays(`${thisMonth}-01`, -160).slice(0, 7)}-01`)
-  const [[revenue]] = await pool.query<RowDataPacket[]>('SELECT COALESCE(SUM(amount), 0) AS total FROM subscription_payments WHERE created_at >= ?', [monthStart])
-  const [paymentRows] = await pool.query<RowDataPacket[]>('SELECT amount, created_at FROM subscription_payments WHERE created_at >= ?', [sixMonthsAgo])
-  const [[allTime]] = await pool.query<RowDataPacket[]>('SELECT COALESCE(SUM(amount), 0) AS total FROM subscription_payments')
-  const byMonth = new Map<string, number>()
+  // Every money figure is per currency (USD card plans, PKR transfers): they are never added together.
+  const totalsOf = (rows: RowDataPacket[]) => rows.reduce<MoneyTotals>((totals, row) => addTo(totals, row.currency, Number(row.total)), {})
+  const [revenue] = await pool.query<RowDataPacket[]>('SELECT currency, SUM(amount) AS total FROM subscription_payments WHERE created_at >= ? GROUP BY currency', [monthStart])
+  const [paymentRows] = await pool.query<RowDataPacket[]>('SELECT amount, currency, created_at FROM subscription_payments WHERE created_at >= ?', [sixMonthsAgo])
+  const [allTime] = await pool.query<RowDataPacket[]>('SELECT currency, SUM(amount) AS total FROM subscription_payments GROUP BY currency')
+  const byMonth = new Map<string, MoneyTotals>()
   for (let index = 5; index >= 0; index -= 1) {
     const date = new Date(`${thisMonth}-01T00:00:00Z`)
     date.setUTCMonth(date.getUTCMonth() - index)
-    byMonth.set(date.toISOString().slice(0, 7), 0)
+    byMonth.set(date.toISOString().slice(0, 7), {})
   }
   for (const row of paymentRows) {
     const key = dayKey(DEFAULT_TIMEZONE, new Date(row.created_at)).slice(0, 7)
-    if (byMonth.has(key)) byMonth.set(key, roundMoney(byMonth.get(key)! + Number(row.amount)))
+    if (byMonth.has(key)) addTo(byMonth.get(key)!, row.currency, Number(row.amount))
   }
   const weekAgo = Date.now() - 7 * DAY
   const soon = Date.now() + 7 * DAY
@@ -218,9 +251,10 @@ export async function platformOverview() {
     active: count('active'),
     expired: count('expired'),
     suspended: count('suspended'),
-    mrr: roundMoney(shops.filter((shop) => shop.subscription.state === 'active').reduce((sum, shop) => sum + shop.subscription.price_pkr, 0)),
-    revenueThisMonth: roundMoney(Number(revenue.total)),
-    revenueAllTime: roundMoney(Number(allTime.total)),
+    // Yearly plans count as a twelfth of their price.
+    mrr: shops.filter((shop) => shop.subscription.state === 'active').reduce<MoneyTotals>((totals, shop) => addTo(totals, shop.subscription.currency, shop.subscription.monthly_price), {}),
+    revenueThisMonth: totalsOf(revenue),
+    revenueAllTime: totalsOf(allTime),
     signups7d: shops.filter((shop) => new Date(shop.created_at).getTime() >= weekAgo).length,
     revenueByMonth: [...byMonth.entries()].map(([month, total]) => ({ month, total })),
     expiringSoon: shops.filter((shop) => ['trialing', 'active'].includes(shop.subscription.state) && new Date(shop.subscription.current_period_end).getTime() <= soon)
@@ -287,10 +321,16 @@ export async function getShopForAdmin(shopId: string) {
   }
 }
 
-async function lockSubscription(connection: PoolConnection, shopId: string) {
-  const [rows] = await connection.query<RowDataPacket[]>('SELECT status, current_period_end FROM subscriptions WHERE shop_id = ? FOR UPDATE', [shopId])
+export async function lockSubscription(connection: PoolConnection, shopId: string) {
+  const [rows] = await connection.query<RowDataPacket[]>('SELECT status, current_period_end, currency, provider, cancel_at_period_end FROM subscriptions WHERE shop_id = ? FOR UPDATE', [shopId])
   if (!rows[0]) throw new LocalDataError('Shop not found.', 404)
-  return { status: rows[0].status as string, periodEnd: new Date(rows[0].current_period_end) }
+  return {
+    status: rows[0].status as string,
+    periodEnd: new Date(rows[0].current_period_end),
+    currency: (isCurrency(rows[0].currency) ? rows[0].currency : 'PKR') as Currency,
+    provider: rows[0].provider as string,
+    cancel: Boolean(rows[0].cancel_at_period_end),
+  }
 }
 
 // Paid time is added on top of time already paid for, never lost.
@@ -305,27 +345,42 @@ function addMonths(from: Date, months: number) {
 
 const formatDay = (date: Date) => dayKey(DEFAULT_TIMEZONE, date)
 
-export async function recordSubscriptionPayment(actorId: string, shopId: string, input: { amount: number; method: PaymentMethod; reference?: string | null; months: number }) {
+// A payment received by transfer, recorded by an admin from the shop's page.
+export async function recordSubscriptionPayment(actorId: string, shopId: string, input: { amount: number; currency?: Currency; method: PaymentMethod; reference?: string | null; months: number }) {
   return withTransaction(async (connection) => {
     const current = await lockSubscription(connection, shopId)
     const base = current.periodEnd.getTime() > Date.now() ? current.periodEnd : new Date()
     const periodEnd = addMonths(base, input.months)
     const now = new Date()
+    const currency = input.currency ?? current.currency
     await connection.query('UPDATE subscriptions SET status = ?, current_period_end = ?, updated_at = ? WHERE shop_id = ?', ['active', periodEnd, now, shopId])
-    const paymentId = randomUUID()
-    await connection.query(
-      'INSERT INTO subscription_payments (id, shop_id, amount, method, reference, months, period_end, recorded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [paymentId, shopId, roundMoney(input.amount), input.method, input.reference?.trim() || null, input.months, periodEnd, actorId, now],
-    )
-    // A shop that came through a partner's link earns that partner a commission (lib/affiliate-core.ts).
-    await addCommissionForPayment(connection, shopId, { id: paymentId, amount: roundMoney(input.amount), months: input.months }, now)
+    await insertPayment(connection, shopId, { amount: input.amount, currency, method: input.method, reference: input.reference?.trim() || null, providerRef: null, months: input.months, periodEnd, actorId }, now)
     // The proofs sent so far are what this payment answers.
     await connection.query('UPDATE payment_proofs SET reviewed_at = ? WHERE shop_id = ? AND reviewed_at IS NULL', [now, shopId])
-    await logEvent(connection, shopId, 'payment', `₨${roundMoney(input.amount).toLocaleString('en-PK')} via ${input.method} · ${input.months} month${input.months === 1 ? '' : 's'} · paid until ${formatDay(periodEnd)}`, actorId)
+    await logEvent(connection, shopId, 'payment', `${formatMoney(roundMoney(input.amount), currency)} via ${input.method} · ${input.months} month${input.months === 1 ? '' : 's'} · paid until ${formatDay(periodEnd)}`, actorId)
   })
 }
 
-export type SubscriptionAction = { action: 'add_days'; days: number } | { action: 'suspend' } | { action: 'resume' } | { action: 'expire' } | { action: 'set_price'; price: number }
+// Every subscription payment, from an admin or from Paddle. A shop that came through a partner's link
+// earns that partner a commission in the payment's currency (lib/affiliate-core.ts).
+export async function insertPayment(
+  connection: PoolConnection, shopId: string,
+  payment: { amount: number; currency: Currency; method: PaymentMethod; reference: string | null; providerRef: string | null; months: number; periodEnd: Date; actorId: string | null },
+  now: Date,
+) {
+  const id = randomUUID()
+  const amount = roundMoney(payment.amount)
+  await connection.query(
+    'INSERT INTO subscription_payments (id, shop_id, amount, currency, method, reference, provider_ref, months, period_end, recorded_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, shopId, amount, payment.currency, payment.method, payment.reference, payment.providerRef, payment.months, payment.periodEnd, payment.actorId, now],
+  )
+  await addCommissionForPayment(connection, shopId, { id, amount, currency: payment.currency, months: payment.months }, now)
+  return id
+}
+
+export type SubscriptionAction =
+  | { action: 'add_days'; days: number } | { action: 'suspend' } | { action: 'resume' } | { action: 'expire' }
+  | { action: 'set_plan'; plan: 'basic' | 'starter' | 'growth'; interval: BillingInterval; price: number }
 
 export async function changeSubscription(actorId: string, shopId: string, change: SubscriptionAction) {
   return withTransaction(async (connection) => {
@@ -350,8 +405,15 @@ export async function changeSubscription(actorId: string, shopId: string, change
       await connection.query('UPDATE subscriptions SET current_period_end = ?, updated_at = ? WHERE shop_id = ?', [now, now, shopId])
       await logEvent(connection, shopId, 'expired', 'Ended by an admin', actorId)
     } else {
-      await connection.query('UPDATE subscriptions SET price_pkr = ?, updated_at = ? WHERE shop_id = ?', [roundMoney(change.price), now, shopId])
-      await logEvent(connection, shopId, 'price_changed', `₨${roundMoney(change.price).toLocaleString('en-PK')} per month`, actorId)
+      // A card subscription's plan follows Paddle; changing it here would be overwritten by the next renewal.
+      if (current.provider === 'paddle' && !current.cancel) throw new LocalDataError('This shop pays by card. Its plan changes from its own Billing page (or in Paddle).', 409)
+      const currency = PLANS[change.plan].currency
+      const interval = change.plan === 'basic' ? 'month' : change.interval
+      await connection.query(
+        "UPDATE subscriptions SET plan = ?, billing_interval = ?, price = ?, currency = ?, provider = 'manual', updated_at = ? WHERE shop_id = ?",
+        [change.plan, interval, roundMoney(change.price), currency, now, shopId],
+      )
+      await logEvent(connection, shopId, 'price_changed', `${PLANS[change.plan].name} · ${formatMoney(roundMoney(change.price), currency)} per ${interval}`, actorId)
     }
   })
 }

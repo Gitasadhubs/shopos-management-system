@@ -23,7 +23,7 @@ async function apply(email: string, name: string) {
 
 async function recordPayment(page: Page, shopId: string, amount: string, months: string) {
   await page.goto(`/admin/shops/${shopId}`)
-  await page.getByLabel('Amount received (₨)').fill(amount)
+  await page.getByLabel('Amount received').fill(amount)
   await page.getByLabel('Months').fill(months)
   await page.getByLabel('Method').selectOption('jazzcash')
   await page.getByRole('button', { name: 'Record payment' }).click()
@@ -96,7 +96,7 @@ test('a partner applies, is approved, refers a shop and is paid 20% of its first
   await expect(page.getByRole('status')).toContainText('Payout of ₨3,600 marked as paid.')
   await page.goto(dashboard)
   await expect(page.getByText('JazzCash TID 556677')).toBeVisible()
-  await expect(page.getByText('Owed to you').locator('..')).toContainText('₨0')
+  await expect(page.getByText('Owed to you').locator('..')).toContainText('$0')
   await expect(page.getByText('Paid to you').locator('..')).toContainText('₨3,600')
 })
 

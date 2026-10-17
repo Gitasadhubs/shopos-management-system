@@ -572,6 +572,44 @@ const migrations: string[][] = [
       CONSTRAINT affiliate_commissions_amount_positive CHECK (amount > 0)
     ) ${TABLE_OPTIONS}`,
   ],
+  [
+    // Card billing through Paddle (lib/paddle.ts) next to manual PKR payments. A subscription now has a
+    // currency and a billing interval (its price is per interval), and provider 'paddle' links it to a
+    // Paddle subscription that renews by itself. Payments and partner commissions keep their currency.
+    // provider_ref: the Paddle transaction, so a webhook delivered twice records one payment.
+    // months 0: a mid-period plan change charged pro rata (it buys no extra time).
+    `ALTER TABLE subscriptions CHANGE COLUMN IF EXISTS price_pkr price DECIMAL(14,2) NOT NULL`,
+    `ALTER TABLE subscriptions
+      ADD COLUMN IF NOT EXISTS currency CHAR(3) NOT NULL DEFAULT 'PKR' AFTER price,
+      ADD COLUMN IF NOT EXISTS billing_interval VARCHAR(5) NOT NULL DEFAULT 'month' AFTER currency,
+      ADD COLUMN IF NOT EXISTS provider VARCHAR(10) NOT NULL DEFAULT 'manual' AFTER billing_interval,
+      ADD COLUMN IF NOT EXISTS provider_customer_id VARCHAR(64) NULL AFTER provider,
+      ADD COLUMN IF NOT EXISTS provider_subscription_id VARCHAR(64) NULL AFTER provider_customer_id,
+      ADD COLUMN IF NOT EXISTS provider_status VARCHAR(12) NULL AFTER provider_subscription_id,
+      ADD COLUMN IF NOT EXISTS cancel_at_period_end TINYINT(1) NOT NULL DEFAULT 0 AFTER provider_status,
+      ADD COLUMN IF NOT EXISTS provider_synced_at DATETIME(3) NULL AFTER cancel_at_period_end,
+      ADD UNIQUE KEY IF NOT EXISTS subscriptions_provider_sub_uq (provider_subscription_id)`,
+    `ALTER TABLE subscriptions ADD CONSTRAINT IF NOT EXISTS subscriptions_currency_valid CHECK (currency IN ('PKR', 'USD'))`,
+    `ALTER TABLE subscriptions ADD CONSTRAINT IF NOT EXISTS subscriptions_interval_valid CHECK (billing_interval IN ('month', 'year'))`,
+    `ALTER TABLE subscription_payments
+      ADD COLUMN IF NOT EXISTS currency CHAR(3) NOT NULL DEFAULT 'PKR' AFTER amount,
+      ADD COLUMN IF NOT EXISTS provider_ref VARCHAR(64) NULL AFTER reference,
+      ADD UNIQUE KEY IF NOT EXISTS subscription_payments_provider_ref_uq (provider_ref)`,
+    `ALTER TABLE subscription_payments DROP CONSTRAINT IF EXISTS subscription_payments_months_positive`,
+    `ALTER TABLE subscription_payments ADD CONSTRAINT IF NOT EXISTS subscription_payments_months_valid CHECK (months >= 0)`,
+    `ALTER TABLE subscription_payments ADD CONSTRAINT IF NOT EXISTS subscription_payments_currency_valid CHECK (currency IN ('PKR', 'USD'))`,
+    `ALTER TABLE affiliate_commissions ADD COLUMN IF NOT EXISTS currency CHAR(3) NOT NULL DEFAULT 'PKR' AFTER amount`,
+    // Every Paddle webhook event handled, by Paddle's event id: a repeat delivery is acknowledged and skipped.
+    `CREATE TABLE IF NOT EXISTS billing_events (
+      event_id VARCHAR(64) NOT NULL PRIMARY KEY,
+      event_type VARCHAR(60) NOT NULL,
+      shop_id CHAR(36) NULL,
+      occurred_at DATETIME(3) NOT NULL,
+      received_at DATETIME(3) NOT NULL,
+      outcome VARCHAR(200) NULL,
+      KEY billing_events_shop_idx (shop_id, received_at)
+    ) ${TABLE_OPTIONS}`,
+  ],
 ]
 
 // Survives Next dev hot reloads, which would otherwise open a new pool per edit.
