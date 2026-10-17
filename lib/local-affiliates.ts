@@ -1,10 +1,10 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import type { RowDataPacket } from 'mysql2/promise'
 import { COMMISSION_MONTHS, COMMISSION_RATE } from '@/lib/affiliate-core'
-import { enforceLimit, ipBucket, normalizeEmail, recordAttempt, type ClientInfo } from '@/lib/local-auth'
+import { emailBucket, enforceLimit, ipBucket, normalizeEmail, recordAttempt, type ClientInfo } from '@/lib/local-auth'
 import { ER_DUP_ENTRY, getPool, iso, isDbError, LocalDataError, roundMoney, withTransaction } from '@/lib/local-db'
 import { subscriptionState, type SubscriptionState } from '@/lib/local-platform'
-import { publicUrl, sendAffiliateApprovedEmail, sendAffiliateReceivedEmail } from '@/lib/mailer'
+import { publicUrl, sendAffiliateApprovedEmail, sendAffiliateReceivedEmail, sendAffiliateSignInEmail } from '@/lib/mailer'
 
 // The partner (affiliate) program. Anyone applies at /partner; a platform admin approves them in
 // /admin/affiliates. An approved partner's link (getshopos.online/?ref=CODE) credits the shops that sign
@@ -83,6 +83,22 @@ export async function listAffiliatesForAdmin(status?: AffiliateStatus) {
 
 // Approving emails the partner their link. A fresh private-page token goes with it (the old one stops working),
 // since the original one is not stored.
+// "Partner sign in": a partner who lost their link asks for a new one by email. The caller always shows
+// the same answer, so this never reveals who is a partner. A new link replaces the old one.
+export async function sendPartnerSignInLink(email: string, client: ClientInfo) {
+  const pool = await getPool()
+  const clean = normalizeEmail(email)
+  await enforceLimit(pool, ipBucket('partner-signin', client.ip), 10, 15)
+  await enforceLimit(pool, emailBucket('partner-signin', clean), 3, 15)
+  await recordAttempt(pool, ipBucket('partner-signin', client.ip))
+  await recordAttempt(pool, emailBucket('partner-signin', clean))
+  const [[row]] = await pool.query<RowDataPacket[]>("SELECT id, name FROM affiliates WHERE email = ? AND status <> 'rejected'", [clean])
+  if (!row) return
+  const token = randomBytes(24).toString('base64url')
+  await pool.query('UPDATE affiliates SET token_hash = ?, updated_at = ? WHERE id = ?', [sha256(token), new Date(), row.id])
+  await sendAffiliateSignInEmail(clean, row.name, pageUrl(token)).catch((error) => console.error('partner email failed', error))
+}
+
 export async function setAffiliateStatus(affiliateId: string, status: 'approved' | 'rejected') {
   const token = randomBytes(24).toString('base64url')
   const affiliate = await withTransaction(async (connection) => {

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { ADMIN_STATE, anonymousContext, latestEmail, linkIn, tokenIn, uniqueEmail } from './auth-helpers'
+import { ADMIN_STATE, anonymousContext, emailCount, latestEmail, linkIn, tokenIn, uniqueEmail } from './auth-helpers'
 import { uniqueName } from './helpers'
 
 // The partner (affiliate) program: apply at /partner, an admin approves, a shop signs up through the
@@ -125,4 +125,30 @@ test('a pending or unknown referral code credits nobody, and partner pages need 
   // The admin list shows the pending partner with no shops.
   const page = await request.get('/admin/affiliates')
   expect(page.ok()).toBe(true)
+})
+
+test('a partner who lost their link signs in by email and gets a new one; others learn nothing', async ({ page }) => {
+  const email = uniqueEmail('signin-partner')
+  await apply(email, uniqueName('Returning Partner'))
+  const first = partnerPath((await latestEmail(email, 'partner application')).text)
+
+  const visitor = await anonymousContext()
+  const asked = Date.now()
+  const known = await visitor.post('/api/partner/sign-in', { headers: { origin: 'https://getshopos.online' }, data: { email } })
+  expect(known.status(), await known.text()).toBe(200)
+  expect(known.headers()['access-control-allow-origin']).toBe('https://getshopos.online')
+  const fresh = partnerPath((await latestEmail(email, 'Your ShopOS partner page', asked)).text)
+  expect(fresh).not.toBe(first)
+
+  // The new link opens the page; the old one no longer does.
+  await page.goto(fresh)
+  await expect(page.getByText('Your application is waiting for approval.')).toBeVisible()
+  expect((await visitor.get(first)).status()).toBe(404)
+
+  // An email that is not a partner gets the same answer, and no email is sent.
+  const stranger = uniqueEmail('not-a-partner')
+  const unknown = await visitor.post('/api/partner/sign-in', { data: { email: stranger } })
+  expect(unknown.status()).toBe(200)
+  expect(await unknown.json()).toEqual(await known.json())
+  expect(await emailCount(stranger)).toBe(0)
 })

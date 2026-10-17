@@ -65,3 +65,7 @@ export function sendAffiliateReceivedEmail(to: string, name: string, pageUrl: st
 export function sendAffiliateApprovedEmail(to: string, name: string, referralLink: string, pageUrl: string) {
   return send(to, 'You are a ShopOS partner', [`Hi ${name},`, 'Your partner application is approved.', `Share your referral link with shop owners: ${referralLink}`, 'Every shop that signs up through it and pays earns you 20% of its payments for its first 12 paid months. We pay what you earned once a month, to the account you gave us.'], { label: 'Open my partner page', url: pageUrl })
 }
+
+export function sendAffiliateSignInEmail(to: string, name: string, pageUrl: string) {
+  return send(to, 'Your ShopOS partner page', [`Hi ${name},`, 'Here is your link to your ShopOS partner page, with your referral link, your shops and your earnings. It replaces any earlier link.'], { label: 'Open my partner page', url: pageUrl })
+}

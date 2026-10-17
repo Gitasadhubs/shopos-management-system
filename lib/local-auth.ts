@@ -93,7 +93,7 @@ export async function enforceLimit(db: Db, bucket: string, limit: number, window
   }
 }
 
-const emailBucket = (kind: string, email: string) => `${kind}:email:${sha256(normalizeEmail(email)).slice(0, 40)}`
+export const emailBucket = (kind: string, email: string) => `${kind}:email:${sha256(normalizeEmail(email)).slice(0, 40)}`
 export const ipBucket = (kind: string, ip: string) => `${kind}:ip:${ip.slice(0, 60)}`
 
 // --- sessions ------------------------------------------------------------------------------

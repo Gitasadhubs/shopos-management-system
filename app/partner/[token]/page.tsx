@@ -60,7 +60,7 @@ export default async function PartnerDashboard({ params }: { params: Promise<{ t
             <ul className="mt-3 divide-y text-sm">{data.payouts.map((payout) => <li key={payout.paid_at} className="flex justify-between gap-4 py-2"><span className="text-stone-600">{day(payout.paid_at)}{payout.note ? ` · ${payout.note}` : ''}</span><b className="tabular-nums">{pkr(payout.amount)}</b></li>)}</ul>
           </div>}
         </>}
-        <p className="mt-8 text-xs text-stone-500">This page is private: anyone with its link can see it. Payouts go to your {PAYOUT_METHODS[affiliate.payout_method]} account on file.</p>
+        <p className="mt-8 text-xs text-stone-500">This page is private: anyone with its link can see it. Lost the link? Use Partner sign in on getshopos.online/partners. Payouts go to your {PAYOUT_METHODS[affiliate.payout_method]} account on file.</p>
       </div>
     </main>
   )
