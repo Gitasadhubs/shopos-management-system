@@ -462,6 +462,9 @@ configure() {
   if [[ $(env_get SHOPOS_SMTP_HOST) == mailpit || -z $(env_get SHOPOS_SMTP_HOST) ]]; then
     info 'Email is needed for sign-up confirmation, password resets and staff invitations.'
     local provider=''
+    # Unattended (--yes) there is no one to type the SMTP login, so keep the test inbox; preset the
+    # SHOPOS_SMTP_* lines in .env.production to use a real provider.
+    if ! can_ask; then provider=5; fi
     choose provider 'Email provider:' 'Brevo (free 300/day): smtp-relay.brevo.com' 'Gmail or Google Workspace (app password): smtp.gmail.com' 'Zoho Mail: smtp.zoho.com' 'Another SMTP server' 'None yet: keep emails in a test inbox on this server (customers cannot confirm sign-ups)'
     local host='' port=587
     case $provider in

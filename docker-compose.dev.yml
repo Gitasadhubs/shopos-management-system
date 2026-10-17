@@ -158,6 +158,14 @@ services:
       SHOPOS_PAY_IBAN: PK00TEST0000111122223333
       SHOPOS_PAY_WALLET: "03000000000"
       SHOPOS_PAY_WHATSAPP: "923000000000"
+      # Card billing with test-only values: the suite signs its own webhooks with this secret.
+      SHOPOS_PADDLE_ENV: sandbox
+      SHOPOS_PADDLE_CLIENT_TOKEN: test_e2e_client_token
+      SHOPOS_PADDLE_WEBHOOK_SECRET: e2e-paddle-webhook-secret
+      SHOPOS_PADDLE_PRICE_STARTER_MONTH: pri_e2e_starter_month
+      SHOPOS_PADDLE_PRICE_STARTER_YEAR: pri_e2e_starter_year
+      SHOPOS_PADDLE_PRICE_GROWTH_MONTH: pri_e2e_growth_month
+      SHOPOS_PADDLE_PRICE_GROWTH_YEAR: pri_e2e_growth_year
       SHOPOS_DB_PORT: 3306
       SHOPOS_DB_NAME: shopos
       SHOPOS_DB_USER: shopos

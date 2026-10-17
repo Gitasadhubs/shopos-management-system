@@ -50,3 +50,31 @@ test('sales are never served from the service worker cache', async ({ page }) =>
   })
   expect(cached).not.toContain('/api/sales')
 })
+
+test('the till opens with no connection and sells from the copy on the device', async ({ page, context, request }) => {
+  const name = `PWA Till ${Date.now().toString(36)}`
+  const created = await request.post('/api/products', { data: { name, cost_price: 10, sale_price: 25, stock_quantity: 4, reorder_level: 1 } })
+  expect(created.status()).toBe(201)
+
+  await page.goto('/dashboard')
+  await page.evaluate(async () => { await navigator.serviceWorker.ready })
+  await page.reload()
+  // A visit while online saves the POS page and the products on the device.
+  await page.goto('/pos')
+  await expect(page.getByText(/ · Products and sales are saved by the server\./)).toBeVisible()
+  await expect(page.getByRole('button', { name: new RegExp(`^${name}`) })).toBeVisible()
+  await page.waitForTimeout(500)
+
+  await context.setOffline(true)
+  await page.reload()
+  await expect(page.getByRole('heading', { name: 'Point of Sale' })).toBeVisible()
+  await expect(page.getByText('Offline', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: new RegExp(`^${name}`) }).click()
+  await page.getByRole('button', { name: /^Complete sale/ }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Saved on this till' })).toBeVisible()
+
+  await context.setOffline(false)
+  await expect(page.getByText(/Waiting to be sent/)).toHaveCount(0, { timeout: 30_000 })
+  const product = ((await (await request.get(`/api/products?search=${encodeURIComponent(name)}`)).json()).data as Array<{ name: string; stock_quantity: number }>).find((item) => item.name === name)
+  expect(Number(product?.stock_quantity)).toBe(3)
+})

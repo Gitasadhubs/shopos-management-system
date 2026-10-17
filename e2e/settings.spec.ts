@@ -64,9 +64,9 @@ test('sound effects can be switched off and on in Settings', async ({ page }) =>
 
 test('the Billing page shows the trial, the plan and how to pay', async ({ page }) => {
   await page.goto('/billing')
-  await expect(page.getByRole('heading', { name: 'Billing' })).toBeVisible()
+  await expect(page.getByRole('main').getByRole('heading', { name: 'Billing' })).toBeVisible()
   await expect(page.getByText(/^\d+ days? left in your free trial$/)).toBeVisible()
-  await expect(page.getByText('₨ 1,500').first()).toBeVisible()
+  await expect(page.getByText('₨1,500').first()).toBeVisible()
   await expect(page.getByText('Meezan Bank')).toBeVisible()
   const whatsapp = await page.getByRole('link', { name: 'Send payment screenshot on WhatsApp' }).getAttribute('href')
   expect(whatsapp).toMatch(/^https:\/\/wa\.me\/\d+\?text=/)

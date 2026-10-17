@@ -160,7 +160,8 @@ test('a sale that fails is not duplicated when retried', async ({ page, request 
   await openPos(page, product.name)
   await productCard(page, product.name).click()
 
-  // The server saves the sale but the response is lost; the retry must reuse the same client_id.
+  // The server saves the sale but the response is lost. The till keeps the sale and sends it again
+  // with the same client_id, so the server returns the sale it already has instead of a second one.
   let dropResponse = true
   await page.route('**/api/sales', async (route) => {
     if (route.request().method() !== 'POST' || !dropResponse) return route.continue()
@@ -169,9 +170,8 @@ test('a sale that fails is not duplicated when retried', async ({ page, request 
     await route.abort('connectionreset')
   })
   await completeButton(page).click()
-  await expect(page.getByRole('main').getByRole('alert')).toBeVisible()
-  await completeButton(page).click()
-  await expect(page.getByRole('status')).toHaveText('Sale completed · ₨ 15')
+  await expect(page.getByRole('status').filter({ hasText: 'Saved on this till' })).toContainText('₨ 15')
+  await expect(page.getByText(/Waiting to be sent/)).toHaveCount(0, { timeout: 30_000 })
   expect(await salesFor(request, product.name)).toHaveLength(1)
   expect((await getProduct(request, product.name))?.stock_quantity).toBe(4)
 })
@@ -261,4 +261,59 @@ test('category chips filter the product grid', async ({ page, request }) => {
   await expect(productCard(page, drink.name)).toBeVisible()
   await page.getByRole('group', { name: 'Filter by category' }).getByRole('button', { name: 'All' }).click()
   await expect(productCard(page, snack.name)).toBeVisible()
+})
+
+// Offline till (lib/offline/till.ts): with no connection the sale is kept on the device, and it reaches
+// the server, once, when the connection is back.
+test('keeps selling offline and sends the sale when the connection is back', async ({ page, context, request }) => {
+  const product = await createProduct(request, { name: uniqueName('Offline Rice'), sale_price: 80, stock_quantity: 5 })
+  await page.goto('/pos')
+  // The shop name in the subtitle means the till knows its shop and can queue sales for it.
+  await expect(page.getByText(/ · Products and sales are saved by the server\./)).toBeVisible()
+  await expect(productCard(page, product.name)).toBeVisible()
+
+  await context.setOffline(true)
+  await productCard(page, product.name).click()
+  await productCard(page, product.name).click()
+  await completeButton(page).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Saved on this till' })).toContainText('₨ 160')
+  await expect(page.getByText('Offline · 1 waiting')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Waiting to be sent (1)' }).or(page.getByText('Waiting to be sent (1)'))).toBeVisible()
+  await expect(productCard(page, product.name)).toContainText('Stock 3')
+  // Nothing reached the server yet.
+  expect((await getProduct(request, product.name))?.stock_quantity).toBe(5)
+
+  await context.setOffline(false)
+  await expect(page.getByText(/Waiting to be sent/)).toHaveCount(0, { timeout: 30_000 })
+  await expect(page.getByText(/waiting$/)).toHaveCount(0)
+  expect((await getProduct(request, product.name))?.stock_quantity).toBe(3)
+  const sales = await salesFor(request, product.name)
+  expect(sales).toHaveLength(1)
+  expect(Number(sales[0].total)).toBe(160)
+})
+
+test('an offline sale keeps its time and is recorded even if stock ran short', async ({ request }) => {
+  const product = await createProduct(request, { name: uniqueName('Offline Oil'), sale_price: 50, stock_quantity: 1 })
+  const sale = { items: [{ product_id: product.id, quantity: 3 }], payment_method: 'cash' }
+  // A sale made online still cannot sell more than there is.
+  expect((await request.post('/api/sales', { data: sale })).status()).toBe(409)
+
+  const soldAt = new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString()
+  const clientId = uniqueCode('offline')
+  const first = await request.post('/api/sales', { data: { ...sale, client_id: clientId, offline: true, sold_at: soldAt } })
+  expect(first.status(), await first.text()).toBe(201)
+  const recorded = (await first.json()).data
+  expect(Math.abs(Date.parse(recorded.created_at) - Date.parse(soldAt))).toBeLessThan(1000)
+  expect(Number(recorded.total)).toBe(150)
+  expect((await getProduct(request, product.name))?.stock_quantity).toBe(0)
+
+  // Sending it again (the till retried) changes nothing.
+  const again = await request.post('/api/sales', { data: { ...sale, client_id: clientId, offline: true, sold_at: soldAt } })
+  expect((await again.json()).data.id).toBe(recorded.id)
+  expect((await getProduct(request, product.name))?.stock_quantity).toBe(0)
+
+  // A time in the future is not believed: the sale is dated now.
+  const future = await request.post('/api/sales', { data: { items: [{ product_id: product.id, quantity: 1 }], payment_method: 'cash', offline: true, sold_at: new Date(Date.now() + 86_400_000).toISOString() } })
+  expect(future.status()).toBe(201)
+  expect(Math.abs(Date.parse((await future.json()).data.created_at) - Date.now())).toBeLessThan(60_000)
 })

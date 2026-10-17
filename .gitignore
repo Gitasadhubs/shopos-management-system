@@ -39,3 +39,4 @@ certs/*
 # Sites added on a server (docs/nginx.md); only the example is tracked.
 /deploy/nginx/sites/*.conf.template
 /docker-compose.override.yml
+.env.demo

@@ -30,11 +30,13 @@ function safeNext(value: string | null) {
   return value && value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\') ? value : '/dashboard'
 }
 
-const HIGHLIGHTS = ['Sell fast at the counter, even offline', 'Stock, suppliers and purchases in one place', 'Customer khata with WhatsApp reminders', 'Daily profit at a glance']
+const HIGHLIGHTS = ['Sell fast at the counter, even offline', 'Stock, suppliers and purchases in one place', 'Customer credit with WhatsApp reminders', 'Daily profit at a glance']
+// The same, short enough to sit side by side on a phone.
+const CHIPS = ['Works offline', 'Stock & suppliers', 'Customer credit', 'Daily profit']
 
 function AuthShell({ title, subtitle, children, wide = false }: { title: string; subtitle?: string; children: React.ReactNode; wide?: boolean }) {
   return (
-    <main className="grid min-h-screen bg-[#fbfaf7] lg:grid-cols-[1.05fr_1fr]">
+    <main className="grid min-h-dvh bg-[#fbfaf7] lg:grid-cols-[1.05fr_1fr]">
       <aside aria-hidden="true" className="relative hidden overflow-hidden text-white shopos-hero lg:flex lg:flex-col lg:justify-between lg:p-12">
         <div className="absolute inset-0 shopos-dots" />
         <div className="relative flex items-center gap-3"><div className="flex size-11 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/30"><Store /></div><p className="text-2xl font-bold">ShopOS</p></div>
@@ -43,24 +45,33 @@ function AuthShell({ title, subtitle, children, wide = false }: { title: string;
           <p className="mt-8 text-3xl font-bold leading-tight">Run your whole shop<br />from one screen.</p>
           <ul className="mt-6 grid gap-3 text-emerald-50">{HIGHLIGHTS.map((item) => <li key={item} className="flex items-center gap-3"><span className="flex size-6 items-center justify-center rounded-full bg-white/20"><Check className="size-3.5" /></span>{item}</li>)}</ul>
         </div>
-        <p className="relative text-xs text-emerald-100/80">Made for local retail in Pakistan.</p>
+        <p className="relative text-xs text-emerald-100/80">Made for independent shops, anywhere in the world.</p>
       </aside>
-      <div className="flex items-center justify-center px-4 py-10">
-        <div className={`w-full ${wide ? 'max-w-[480px]' : 'max-w-[420px]'} shopos-rise`}>
-          <div className="mb-8 flex flex-col items-center gap-3 text-center lg:hidden">
-            <div className="flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 text-white shadow-lg shadow-emerald-600/30"><Store /></div>
-            <p className="text-2xl font-bold">Shop<span className="text-emerald-600">OS</span></p>
-          </div>
-          <section className="rounded-3xl border border-stone-200/80 bg-white p-7 shadow-xl shadow-stone-900/5">
+      <div className="flex flex-col items-center lg:justify-center lg:px-4 lg:py-10">
+        {/* Phones and tablets: the brand panel becomes a short banner above the form. */}
+        <header className="relative w-full overflow-hidden px-5 pb-12 pt-6 text-white shopos-hero lg:hidden">
+          <div className="absolute inset-0 shopos-dots" />
+          <a href="https://getshopos.online" className="relative flex w-fit items-center gap-2.5"><span className="flex size-9 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/30"><Store className="size-5" /></span><span className="text-lg font-bold">ShopOS</span></a>
+          <p className="relative mt-4 text-xl font-bold leading-snug">Run your whole shop from one screen.</p>
+          <ul className="relative mt-3 flex flex-wrap gap-1.5 text-xs font-medium">{CHIPS.map((chip) => <li key={chip} className="flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 ring-1 ring-white/20"><Check className="size-3" />{chip}</li>)}</ul>
+        </header>
+        <div className={`relative -mt-7 w-full px-3 pb-8 sm:px-4 lg:mt-0 lg:px-0 lg:pb-0 ${wide ? 'max-w-[480px]' : 'max-w-[420px]'} shopos-rise`}>
+          <section className="rounded-2xl border border-stone-200/80 bg-white p-5 shadow-xl shadow-stone-900/5 sm:rounded-3xl sm:p-7">
             <h1 className="text-xl font-bold text-stone-900">{title}</h1>
             {subtitle && <p className="mt-2 text-sm text-muted-foreground">{subtitle}</p>}
             <div className="mt-6">{children}</div>
           </section>
+          <p className="mt-4 text-center text-xs text-muted-foreground lg:hidden">
+            <a href="https://getshopos.online/terms" className="underline-offset-2 hover:underline">Terms</a> · <a href="https://getshopos.online/privacy" className="underline-offset-2 hover:underline">Privacy</a> · <a href={PARTNER_SIGN_IN} className="underline-offset-2 hover:underline">Partner sign in</a>
+          </p>
         </div>
       </div>
     </main>
   )
 }
+
+// Partners (who bring shops) have their own page on the website; it opens its sign-in dialog from #sign-in.
+const PARTNER_SIGN_IN = 'https://getshopos.online/partners#sign-in'
 
 function Field({ id, label, ...props }: { id: string; label: string } & React.ComponentProps<typeof Input>) {
   return <div className="grid gap-1.5"><Label htmlFor={id}>{label}</Label><Input id={id} className="h-11" {...props} /></div>
@@ -136,6 +147,7 @@ export function LocalLoginPage() {
         <SubmitButton busy={busy}>Sign in</SubmitButton>
         <Link href="/forgot-password" className="text-center text-sm font-medium text-emerald-700">Forgot password?</Link>
         <p className="border-t pt-4 text-center text-sm text-muted-foreground">New to ShopOS? <Link href="/signup" className="font-semibold text-emerald-700">Create your shop</Link> — free for 14 days.</p>
+        <a href={PARTNER_SIGN_IN} className="-mt-1 flex items-center justify-center gap-1.5 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2.5 text-sm font-medium text-violet-800 hover:bg-violet-100">ShopOS partner? <span className="font-semibold underline underline-offset-2">Partner sign in</span></a>
       </form>
     </AuthShell>
   )
@@ -147,6 +159,18 @@ export function LocalSignupPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [created, setCreated] = useState('')
+  // A partner's referral code: from this link (?ref=CODE), or remembered from an earlier visit.
+  const params = useSearchParams()
+  const [ref, setRef] = useState('')
+  useEffect(() => {
+    const fromLink = params.get('ref')?.trim() ?? ''
+    try {
+      if (fromLink) localStorage.setItem('shopos-ref', fromLink)
+      setRef(fromLink || localStorage.getItem('shopos-ref') || '')
+    } catch {
+      setRef(fromLink)
+    }
+  }, [params])
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -154,7 +178,7 @@ export function LocalSignupPage() {
     if (problem) return setError(problem)
     setBusy(true)
     setError('')
-    const result = await post<{ email: string }>('/api/auth/signup', { shop_name: form.shop_name, full_name: form.full_name, phone: form.phone, email: form.email, password: form.password })
+    const result = await post<{ email: string }>('/api/auth/signup', { shop_name: form.shop_name, full_name: form.full_name, phone: form.phone, email: form.email, password: form.password, ...(ref ? { ref } : {}) })
     setBusy(false)
     if (result.ok || result.code === 'email_failed') setCreated(result.data?.email ?? form.email)
     if (!result.ok) setError(result.error ?? 'Could not create your shop.')

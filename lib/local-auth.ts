@@ -1,7 +1,9 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
-import { ER_DUP_ENTRY, getPool, isDbError, LocalDataError, withTransaction } from '@/lib/local-db'
-import { createShopWithTrial, subscriptionFromRow, type ShopSubscription } from '@/lib/local-platform'
+import { ER_DUP_ENTRY, getPool, isDbError, LocalDataError, withTransaction, type Queryable } from '@/lib/local-db'
+import { approvedAffiliateId } from '@/lib/affiliate-core'
+import { createShopWithTrial, SUBSCRIPTION_COLUMNS, subscriptionFromRow, type ShopSubscription } from '@/lib/local-platform'
+import { PLANS, type PlanId } from '@/lib/plans'
 import { sendInviteEmail, sendPasswordResetEmail, sendVerificationEmail } from '@/lib/mailer'
 import { dummyPasswordHash, hashPassword, verifyPassword } from '@/lib/password'
 import type { Role } from '@/lib/permissions'
@@ -76,7 +78,7 @@ async function attemptCount(db: Db, bucket: string, windowMinutes: number) {
   return Number(row.count)
 }
 
-async function recordAttempt(db: Db, bucket: string) {
+export async function recordAttempt(db: Db, bucket: string) {
   await db.query('INSERT INTO auth_attempts (bucket, created_at) VALUES (?, ?)', [bucket, new Date()])
   // Housekeeping without a scheduler: occasionally drop rows nothing reads any more.
   if (Math.random() < 0.02) {
@@ -86,14 +88,14 @@ async function recordAttempt(db: Db, bucket: string) {
   }
 }
 
-async function enforceLimit(db: Db, bucket: string, limit: number, windowMinutes: number) {
+export async function enforceLimit(db: Db, bucket: string, limit: number, windowMinutes: number) {
   if ((await attemptCount(db, bucket, windowMinutes)) >= limit) {
     throw new LocalDataError(`Too many attempts. Wait ${windowMinutes} minutes and try again.`, 429, 'rate_limited')
   }
 }
 
-const emailBucket = (kind: string, email: string) => `${kind}:email:${sha256(normalizeEmail(email)).slice(0, 40)}`
-const ipBucket = (kind: string, ip: string) => `${kind}:ip:${ip.slice(0, 60)}`
+export const emailBucket = (kind: string, email: string) => `${kind}:email:${sha256(normalizeEmail(email)).slice(0, 40)}`
+export const ipBucket = (kind: string, ip: string) => `${kind}:ip:${ip.slice(0, 60)}`
 
 // --- sessions ------------------------------------------------------------------------------
 
@@ -116,8 +118,7 @@ export async function getSessionUser(token: string | undefined): Promise<Session
   const pool = await getPool()
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT ${USER_COLUMNS.split(', ').map((column) => `users.${column}`).join(', ')}, sessions.last_seen_at AS session_seen_at,
-       shops.name AS shop_name, shops.timezone AS shop_timezone,
-       subscriptions.plan AS sub_plan, subscriptions.status AS sub_status, subscriptions.price_pkr AS sub_price, subscriptions.current_period_end AS sub_period_end
+       shops.name AS shop_name, shops.timezone AS shop_timezone, ${SUBSCRIPTION_COLUMNS}
      FROM sessions JOIN users ON users.id = sessions.user_id
      LEFT JOIN shops ON shops.id = users.shop_id
      LEFT JOIN subscriptions ON subscriptions.shop_id = users.shop_id
@@ -227,7 +228,7 @@ export async function createPlatformAdmin(input: { email: string; full_name: str
 }
 
 // Public signup: a new shop on a free trial, with the person signing up as its owner.
-export async function signUpShop(input: { shop_name: string; phone?: string; full_name: string; email: string; password: string }, client: ClientInfo) {
+export async function signUpShop(input: { shop_name: string; phone?: string; full_name: string; email: string; password: string; ref?: string }, client: ClientInfo) {
   const pool = await getPool()
   const email = normalizeEmail(input.email)
   // New shops per IP per hour; tests raise it with SHOPOS_SIGNUP_LIMIT since they sign up many shops.
@@ -237,7 +238,8 @@ export async function signUpShop(input: { shop_name: string; phone?: string; ful
   try {
     const { user, token } = await withTransaction(async (connection) => {
       if (await findUserByEmail(connection, email)) throw new LocalDataError('Someone with this email already has an account. Sign in instead.', 409, 'email_taken')
-      const shopId = await createShopWithTrial(connection, { name: input.shop_name, phone: input.phone })
+      // Signed up through a partner's link: the shop is credited to them (unknown or unapproved codes are ignored).
+      const shopId = await createShopWithTrial(connection, { name: input.shop_name, phone: input.phone, referred_by: await approvedAffiliateId(connection, input.ref) })
       const id = randomUUID()
       const now = new Date()
       await connection.query(
@@ -359,12 +361,26 @@ export async function listStaff(actor: SessionUser) {
   }
 }
 
+// A plan with a staff limit (Starter: 3) counts active staff accounts plus open invitations; the owner is
+// not counted. Shops already over it (after moving down a plan) keep their staff but cannot add more.
+async function assertStaffRoom(db: Queryable, shop: NonNullable<SessionUser['shop']>) {
+  const limit = PLANS[shop.subscription.plan as PlanId]?.staffLimit
+  if (limit === null || limit === undefined) return
+  const [[row]] = await db.query<RowDataPacket[]>(
+    `SELECT (SELECT COUNT(*) FROM users WHERE shop_id = ? AND role <> 'owner' AND is_active = 1)
+          + (SELECT COUNT(*) FROM email_tokens WHERE shop_id = ? AND purpose = 'invite' AND used_at IS NULL AND expires_at > ?) AS n`,
+    [shop.id, shop.id, new Date()],
+  )
+  if (Number(row.n) >= limit) throw new LocalDataError(`The ${PLANS[shop.subscription.plan as PlanId].name} plan includes up to ${limit} staff. Move to Growth in Billing for unlimited staff, or disable someone first.`, 403, 'plan_limit')
+}
+
 export async function inviteStaff(actor: SessionUser, input: { email: string; role: 'manager' | 'cashier'; full_name?: string }) {
   const shop = ownerShop(actor)
   const pool = await getPool()
   const email = normalizeEmail(input.email)
   await enforceLimit(pool, `invite:user:${actor.id}`, 30, 60)
   if (await findUserByEmail(pool, email)) throw new LocalDataError('Someone with this email already has an account.', 409, 'email_taken')
+  await assertStaffRoom(pool, shop)
   await recordAttempt(pool, `invite:user:${actor.id}`)
   const token = await issueToken(pool, 'invite', { email, shop_id: shop.id, role: input.role, full_name: input.full_name?.trim() || null, created_by: actor.id })
   await mailOrFail(sendInviteEmail(email, actor.full_name, shop.name, input.role, token), 'The invitation was saved, but the email could not be sent. Check the mail settings and send the invitation again.')
@@ -419,6 +435,7 @@ export async function updateStaff(actor: SessionUser, userId: string, changes: {
     const now = new Date()
     if (changes.role) await connection.query('UPDATE users SET role = ?, updated_at = ? WHERE id = ?', [changes.role, now, userId])
     if (changes.is_active !== undefined) {
+      if (changes.is_active && !target.is_active) await assertStaffRoom(connection, shop)
       await connection.query('UPDATE users SET is_active = ?, updated_at = ? WHERE id = ?', [changes.is_active ? 1 : 0, now, userId])
       // Disabling takes effect immediately on every device.
       if (!changes.is_active) await connection.query('DELETE FROM sessions WHERE user_id = ?', [userId])

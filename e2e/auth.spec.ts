@@ -80,7 +80,7 @@ test.describe('signed out', () => {
     await expect(page).toHaveURL(/\/login$/)
     await page.goto('/signup')
     await expect(page.getByRole('heading', { name: 'Create your shop' })).toBeVisible()
-    await page.getByRole('main').getByRole('link', { name: 'Sign in' }).click()
+    await page.getByRole('main').getByRole('link', { name: 'Sign in', exact: true }).click()
     await expect(page).toHaveURL(/\/login$/)
     await page.getByRole('link', { name: 'Create your shop' }).click()
     await expect(page).toHaveURL(/\/signup$/)

@@ -56,7 +56,18 @@ export type LocalSaleReturn = {
 export type LocalSaleReturnInput = { items: Array<{ product_id: string; quantity: number }>; reason?: string; client_id?: string }
 export type LocalSaleFilter = { search?: string; start?: Date; end?: Date; limit?: number; offset?: number }
 export type PaymentMethod = 'cash' | 'card' | 'credit'
-export type LocalSaleInput = { items: Array<{ product_id: string; quantity: number }>; discount?: number; payment_method: PaymentMethod; amount_paid?: number; client_id?: string; customer_id?: string | null }
+// offline: rung up on a till without a connection and synced later (see lib/offline/till.ts). The goods
+// have already left the shop, so the sale is recorded even if stock ran short meanwhile (stock stops at 0),
+// and it keeps the time it was made (sold_at, up to 14 days back).
+export type LocalSaleInput = { items: Array<{ product_id: string; quantity: number }>; discount?: number; payment_method: PaymentMethod; amount_paid?: number; client_id?: string; customer_id?: string | null; offline?: boolean; sold_at?: string }
+
+const OFFLINE_SALE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000
+// When an offline sale happened; anything in the future or too old counts as now.
+export function offlineSaleTime(soldAt: string | undefined, now = new Date()) {
+  const time = soldAt ? Date.parse(soldAt) : Number.NaN
+  if (!Number.isFinite(time) || time > now.getTime() || now.getTime() - time > OFFLINE_SALE_MAX_AGE_MS) return now
+  return new Date(time)
+}
 
 export class LocalDataError extends Error {
   // code: machine-readable reason the UI can act on, e.g. 'unverified' to offer a new verification link.
@@ -511,6 +522,94 @@ const migrations: string[][] = [
       CONSTRAINT payment_proofs_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE
     ) ${TABLE_OPTIONS}`,
   ],
+  [
+    // Affiliate (partner) program (lib/local-affiliates.ts). People apply at /partner; an admin approves
+    // them. A shop that signs up through an approved partner's link records them in shops.referred_by,
+    // and each payment from that shop in its first 12 paid months earns the partner a commission.
+    // token_hash: the partner's private page /partner/<token> (only the hash is stored).
+    `CREATE TABLE IF NOT EXISTS affiliates (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      code VARCHAR(16) NOT NULL,
+      name VARCHAR(120) NOT NULL,
+      email VARCHAR(254) NOT NULL,
+      phone VARCHAR(40) NOT NULL,
+      city VARCHAR(80) NULL,
+      country VARCHAR(80) NULL,
+      payout_method VARCHAR(20) NOT NULL,
+      payout_details VARCHAR(200) NOT NULL,
+      about VARCHAR(500) NULL,
+      status VARCHAR(12) NOT NULL DEFAULT 'pending',
+      token_hash CHAR(64) NOT NULL,
+      created_at DATETIME(3) NOT NULL,
+      updated_at DATETIME(3) NOT NULL,
+      approved_at DATETIME(3) NULL,
+      UNIQUE KEY affiliates_code_uq (code),
+      UNIQUE KEY affiliates_email_uq (email),
+      UNIQUE KEY affiliates_token_uq (token_hash),
+      KEY affiliates_status_idx (status, created_at),
+      CONSTRAINT affiliates_status_valid CHECK (status IN ('pending', 'approved', 'rejected')),
+      CONSTRAINT affiliates_payout_valid CHECK (payout_method IN ('paypal', 'wise', 'payoneer', 'bank', 'mobile_wallet', 'other'))
+    ) ${TABLE_OPTIONS}`,
+    `ALTER TABLE shops
+      ADD COLUMN IF NOT EXISTS referred_by CHAR(36) NULL AFTER timezone,
+      ADD KEY IF NOT EXISTS shops_referred_by_idx (referred_by),
+      ADD CONSTRAINT shops_referred_by_fk FOREIGN KEY IF NOT EXISTS (referred_by) REFERENCES affiliates (id) ON DELETE SET NULL`,
+    `CREATE TABLE IF NOT EXISTS affiliate_commissions (
+      id CHAR(36) NOT NULL PRIMARY KEY,
+      affiliate_id CHAR(36) NOT NULL,
+      shop_id CHAR(36) NOT NULL,
+      payment_id CHAR(36) NOT NULL,
+      months INT NOT NULL,
+      amount DECIMAL(14,2) NOT NULL,
+      created_at DATETIME(3) NOT NULL,
+      paid_at DATETIME(3) NULL,
+      payout_note VARCHAR(200) NULL,
+      UNIQUE KEY affiliate_commissions_payment_uq (payment_id),
+      KEY affiliate_commissions_affiliate_idx (affiliate_id, paid_at),
+      CONSTRAINT affiliate_commissions_affiliate_fk FOREIGN KEY (affiliate_id) REFERENCES affiliates (id) ON DELETE CASCADE,
+      CONSTRAINT affiliate_commissions_shop_fk FOREIGN KEY (shop_id) REFERENCES shops (id) ON DELETE CASCADE,
+      CONSTRAINT affiliate_commissions_payment_fk FOREIGN KEY (payment_id) REFERENCES subscription_payments (id) ON DELETE CASCADE,
+      CONSTRAINT affiliate_commissions_amount_positive CHECK (amount > 0)
+    ) ${TABLE_OPTIONS}`,
+  ],
+  [
+    // Card billing through Paddle (lib/paddle.ts) next to manual PKR payments. A subscription now has a
+    // currency and a billing interval (its price is per interval), and provider 'paddle' links it to a
+    // Paddle subscription that renews by itself. Payments and partner commissions keep their currency.
+    // provider_ref: the Paddle transaction, so a webhook delivered twice records one payment.
+    // months 0: a mid-period plan change charged pro rata (it buys no extra time).
+    `ALTER TABLE subscriptions CHANGE COLUMN IF EXISTS price_pkr price DECIMAL(14,2) NOT NULL`,
+    `ALTER TABLE subscriptions
+      ADD COLUMN IF NOT EXISTS currency CHAR(3) NOT NULL DEFAULT 'PKR' AFTER price,
+      ADD COLUMN IF NOT EXISTS billing_interval VARCHAR(5) NOT NULL DEFAULT 'month' AFTER currency,
+      ADD COLUMN IF NOT EXISTS provider VARCHAR(10) NOT NULL DEFAULT 'manual' AFTER billing_interval,
+      ADD COLUMN IF NOT EXISTS provider_customer_id VARCHAR(64) NULL AFTER provider,
+      ADD COLUMN IF NOT EXISTS provider_subscription_id VARCHAR(64) NULL AFTER provider_customer_id,
+      ADD COLUMN IF NOT EXISTS provider_status VARCHAR(12) NULL AFTER provider_subscription_id,
+      ADD COLUMN IF NOT EXISTS cancel_at_period_end TINYINT(1) NOT NULL DEFAULT 0 AFTER provider_status,
+      ADD COLUMN IF NOT EXISTS provider_synced_at DATETIME(3) NULL AFTER cancel_at_period_end,
+      ADD UNIQUE KEY IF NOT EXISTS subscriptions_provider_sub_uq (provider_subscription_id)`,
+    `ALTER TABLE subscriptions ADD CONSTRAINT IF NOT EXISTS subscriptions_currency_valid CHECK (currency IN ('PKR', 'USD'))`,
+    `ALTER TABLE subscriptions ADD CONSTRAINT IF NOT EXISTS subscriptions_interval_valid CHECK (billing_interval IN ('month', 'year'))`,
+    `ALTER TABLE subscription_payments
+      ADD COLUMN IF NOT EXISTS currency CHAR(3) NOT NULL DEFAULT 'PKR' AFTER amount,
+      ADD COLUMN IF NOT EXISTS provider_ref VARCHAR(64) NULL AFTER reference,
+      ADD UNIQUE KEY IF NOT EXISTS subscription_payments_provider_ref_uq (provider_ref)`,
+    `ALTER TABLE subscription_payments DROP CONSTRAINT IF EXISTS subscription_payments_months_positive`,
+    `ALTER TABLE subscription_payments ADD CONSTRAINT IF NOT EXISTS subscription_payments_months_valid CHECK (months >= 0)`,
+    `ALTER TABLE subscription_payments ADD CONSTRAINT IF NOT EXISTS subscription_payments_currency_valid CHECK (currency IN ('PKR', 'USD'))`,
+    `ALTER TABLE affiliate_commissions ADD COLUMN IF NOT EXISTS currency CHAR(3) NOT NULL DEFAULT 'PKR' AFTER amount`,
+    // Every Paddle webhook event handled, by Paddle's event id: a repeat delivery is acknowledged and skipped.
+    `CREATE TABLE IF NOT EXISTS billing_events (
+      event_id VARCHAR(64) NOT NULL PRIMARY KEY,
+      event_type VARCHAR(60) NOT NULL,
+      shop_id CHAR(36) NULL,
+      occurred_at DATETIME(3) NOT NULL,
+      received_at DATETIME(3) NOT NULL,
+      outcome VARCHAR(200) NULL,
+      KEY billing_events_shop_idx (shop_id, received_at)
+    ) ${TABLE_OPTIONS}`,
+  ],
 ]
 
 // Survives Next dev hot reloads, which would otherwise open a new pool per edit.
@@ -785,7 +884,7 @@ export async function createLocalSale(shopId: string, input: LocalSaleInput, act
       const lines = input.items.map(({ product_id, quantity }) => {
         const product = productsById.get(product_id)
         if (!product) throw new LocalDataError('A product in this sale is no longer available.', 404)
-        if (quantity > product.stock_quantity) throw new LocalDataError(`Not enough stock for ${product.name}.`, 409)
+        if (quantity > product.stock_quantity && !input.offline) throw new LocalDataError(`Not enough stock for ${product.name}.`, 409)
         return { product, quantity, subtotal: roundMoney(product.sale_price * quantity) }
       })
 
@@ -813,7 +912,7 @@ export async function createLocalSale(shopId: string, input: LocalSaleInput, act
       await connection.query('UPDATE shops SET next_sale_number = ? WHERE id = ?', [number + 1, shopId])
 
       const id = randomUUID()
-      const createdAt = new Date()
+      const createdAt = input.offline ? offlineSaleTime(input.sold_at) : new Date()
       await connection.query(
         `INSERT INTO sales (id, shop_id, number, client_id, customer_id, total, discount, payment_method, amount_paid, change_given, credit_amount, created_by, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -824,7 +923,7 @@ export async function createLocalSale(shopId: string, input: LocalSaleInput, act
           'INSERT INTO sale_items (id, sale_id, product_id, product_name, quantity, unit_price, cost_price, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
           [randomUUID(), id, product.id, product.name, quantity, product.sale_price, product.cost_price, lineSubtotal],
         )
-        await connection.query('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?', [quantity, createdAt, product.id])
+        await connection.query('UPDATE products SET stock_quantity = GREATEST(stock_quantity - ?, 0), updated_at = ? WHERE id = ?', [quantity, new Date(), product.id])
       }
       if (creditAmount > 0) {
         await connection.query('UPDATE customers SET balance = balance + ?, updated_at = ? WHERE id = ?', [creditAmount, createdAt, input.customer_id])

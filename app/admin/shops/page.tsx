@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { Search } from 'lucide-react'
-import { formatDate, pkr, requirePlatformAdmin, STATE_STYLES } from '@/lib/admin'
+import { formatDate, planPrice, requirePlatformAdmin, STATE_STYLES } from '@/lib/admin'
 import { listShopsForAdmin, type SubscriptionState } from '@/lib/local-platform'
 
 export const dynamic = 'force-dynamic'
@@ -36,7 +36,7 @@ export default async function ShopsPage({ searchParams }: { searchParams: Promis
             <td className="px-5 py-4"><p className="font-semibold">{shop.name}</p><p className="text-xs text-stone-500">Joined {formatDate(shop.created_at)}{shop.phone ? ` · ${shop.phone}` : ''}</p></td>
             <td className="px-5 py-4"><p>{shop.owner_name ?? '—'}</p><p className="text-xs text-stone-500">{shop.owner_email ?? ''}</p></td>
             <td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${STATE_STYLES[shop.subscription.state]}`}>{shop.subscription.state}</span></td>
-            <td className="px-5 py-4">{pkr(shop.subscription.price_pkr)}</td>
+            <td className="px-5 py-4">{planPrice(shop.subscription)}</td>
             <td className="px-5 py-4 text-stone-600">{formatDate(shop.subscription.current_period_end)}<p className="text-xs text-stone-400">{shop.subscription.state === 'trialing' || shop.subscription.state === 'active' ? `${shop.subscription.days_left} days left` : ''}</p></td>
             <td className="px-5 py-4 tabular-nums">{shop.users}</td>
             <td className="px-5 py-4 tabular-nums">{shop.products}</td>

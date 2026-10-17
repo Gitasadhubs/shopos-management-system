@@ -25,7 +25,7 @@ export default function OfflinePage() {
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-primary">ShopOS</p>
           <h1 className="text-4xl font-bold tracking-tight text-foreground">You&apos;re offline</h1>
           <p className="text-base leading-7 text-muted-foreground">
-            ShopOS needs a connection to reach the server database. Unsaved changes are not queued while offline.
+            This page needs a connection. The till still works: open the POS to keep selling. Sales are kept on this device and sent when the connection is back.
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:flex-row">

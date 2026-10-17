@@ -1,15 +1,21 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { ArrowLeft, Ban, CalendarPlus, History, ImageIcon, PlayCircle, Receipt, Tag, TimerOff, Users } from 'lucide-react'
+import { ArrowLeft, Ban, CalendarPlus, CreditCard, History, ImageIcon, PlayCircle, Receipt, Tag, TimerOff, Users } from 'lucide-react'
 import { PaymentProofList } from '@/components/payment-proofs'
-import { formatDate, formatDateTime, pkr, requirePlatformAdmin, STATE_STYLES } from '@/lib/admin'
+import { formatDate, formatDateTime, pkr, planPrice, requirePlatformAdmin, STATE_STYLES } from '@/lib/admin'
+import { listBillingEvents } from '@/lib/local-billing'
 import { getShopForAdmin } from '@/lib/local-platform'
+import { formatMoney } from '@/lib/money'
+import { PLANS } from '@/lib/plans'
 import { changeSubscriptionAction, recordPaymentAction } from '../../actions'
 
 export const dynamic = 'force-dynamic'
 
 const input = 'mt-1.5 h-10 w-full rounded-lg border border-stone-200 bg-white px-3 text-sm outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10'
-const EVENT_LABELS: Record<string, string> = { trial_started: 'Trial started', payment: 'Payment recorded', extended: 'Days added', suspended: 'Suspended', resumed: 'Resumed', expired: 'Ended', price_changed: 'Price changed', proof_sent: 'Payment proof sent' }
+const EVENT_LABELS: Record<string, string> = {
+  trial_started: 'Trial started', payment: 'Payment recorded', extended: 'Days added', suspended: 'Suspended', resumed: 'Resumed', expired: 'Ended', price_changed: 'Plan changed',
+  proof_sent: 'Payment proof sent', card_cancelled: 'Card plan cancelled', card_resumed: 'Card plan resumed', card_past_due: 'Card payment failed',
+}
 
 export default async function ShopDetail({ params, searchParams }: { params: Promise<{ shopId: string }>; searchParams: Promise<{ notice?: string; error?: string }> }) {
   await requirePlatformAdmin()
@@ -21,6 +27,9 @@ export default async function ShopDetail({ params, searchParams }: { params: Pro
   const { shop, usage, users, payments, proofs, events } = detail
   const waiting = proofs.filter((proof) => !proof.reviewed_at).length
   const sub = shop.subscription
+  // A renewing card subscription's plan and price come from Paddle; only transfers set them here.
+  const cardRenewing = sub.provider === 'paddle' && !sub.cancel_at_period_end
+  const billingEvents = sub.provider === 'paddle' ? await listBillingEvents(shop.id) : []
 
   return (
     <section className="p-5 sm:p-8">
@@ -33,7 +42,8 @@ export default async function ShopDetail({ params, searchParams }: { params: Pro
         <div className="rounded-2xl border border-stone-200 bg-white p-4 text-right shadow-sm">
           <span className={`rounded-full px-3 py-1 text-xs font-semibold capitalize ${STATE_STYLES[sub.state]}`}>{sub.state}</span>
           <p className="mt-2 text-sm text-stone-500">{sub.state === 'suspended' ? 'Period would end' : sub.state === 'expired' ? 'Ended' : 'Period ends'} {formatDate(sub.current_period_end)}</p>
-          <p className="text-sm font-semibold">{pkr(sub.price_pkr)} / month</p>
+          <p className="text-sm font-semibold">{sub.plan_name} · {planPrice(sub)}</p>
+          <p className="text-xs text-stone-500">{sub.provider === 'paddle' ? `Card (Paddle)${sub.cancel_at_period_end ? ', not renewing' : ', renews by itself'}${sub.past_due ? ', payment failed' : ''}` : 'Pays by transfer'}</p>
         </div>
       </div>
 
@@ -50,7 +60,8 @@ export default async function ShopDetail({ params, searchParams }: { params: Pro
           <p className="mt-1 text-xs text-stone-500">Adds the months on top of any time already paid, and makes the shop active.</p>
           <input type="hidden" name="shop_id" value={shop.id} />
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <label className="text-sm font-medium">Amount received (₨)<input name="amount" type="number" min="1" step="0.01" required defaultValue={sub.price_pkr} className={input} /></label>
+            <label className="text-sm font-medium">Amount received<input name="amount" type="number" min="1" step="0.01" required defaultValue={sub.currency === 'PKR' ? sub.price : PLANS.basic.prices.month} className={input} /></label>
+            <label className="text-sm font-medium">Currency<select name="currency" aria-label="Currency" defaultValue="PKR" className={input}><option value="PKR">PKR (₨)</option><option value="USD">USD ($)</option></select></label>
             <label className="text-sm font-medium">Months<input name="months" type="number" min="1" max="24" required defaultValue={1} className={input} /></label>
             <label className="text-sm font-medium">Method<select name="method" defaultValue="bank" className={input}><option value="bank">Bank transfer</option><option value="jazzcash">JazzCash</option><option value="easypaisa">EasyPaisa</option><option value="cash">Cash</option><option value="other">Other</option></select></label>
             <label className="text-sm font-medium">Reference<input name="reference" maxLength={120} placeholder="Transaction ID" className={input} /></label>
@@ -65,11 +76,15 @@ export default async function ShopDetail({ params, searchParams }: { params: Pro
             <label className="flex-1 text-sm font-medium">Free days to add<input name="days" type="number" min="1" max="365" required defaultValue={7} className={input} /></label>
             <button className="flex h-10 items-center gap-2 rounded-lg bg-stone-900 px-4 text-sm font-semibold text-white hover:bg-stone-800"><CalendarPlus className="size-4" />Add days</button>
           </form>
-          <form action={changeSubscriptionAction} className="flex items-end gap-2">
-            <input type="hidden" name="shop_id" value={shop.id} /><input type="hidden" name="action" value="set_price" />
-            <label className="flex-1 text-sm font-medium">Monthly price (₨)<input name="price" type="number" min="0" step="1" required defaultValue={sub.price_pkr} className={input} /></label>
-            <button className="flex h-10 items-center gap-2 rounded-lg border border-stone-200 px-4 text-sm font-semibold hover:bg-stone-50"><Tag className="size-4" />Save price</button>
-          </form>
+          {cardRenewing
+            ? <p className="rounded-lg bg-sky-50 p-3 text-xs text-sky-900">Plan and price follow the shop&apos;s card subscription in Paddle. The owner changes them from Billing.</p>
+            : <form action={changeSubscriptionAction} className="grid gap-2 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
+              <input type="hidden" name="shop_id" value={shop.id} /><input type="hidden" name="action" value="set_plan" />
+              <label className="text-sm font-medium">Plan<select name="plan" aria-label="Plan" defaultValue={sub.plan in PLANS ? sub.plan : 'basic'} className={input}>{Object.values(PLANS).map((plan) => <option key={plan.id} value={plan.id}>{plan.name} ({plan.currency})</option>)}</select></label>
+              <label className="text-sm font-medium">Per<select name="interval" aria-label="Per" defaultValue={sub.interval} className={input}><option value="month">Month</option><option value="year">Year</option></select></label>
+              <label className="text-sm font-medium">Price<input name="price" type="number" min="0" step="0.01" required defaultValue={sub.price} className={input} /></label>
+              <button className="flex h-10 items-center justify-center gap-2 rounded-lg border border-stone-200 px-4 text-sm font-semibold hover:bg-stone-50"><Tag className="size-4" />Save plan</button>
+            </form>}
           <div className="flex flex-wrap gap-2 border-t pt-4">
             {sub.state === 'suspended'
               ? <form action={changeSubscriptionAction}><input type="hidden" name="shop_id" value={shop.id} /><input type="hidden" name="action" value="resume" /><button className="flex h-10 items-center gap-2 rounded-lg bg-emerald-50 px-4 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"><PlayCircle className="size-4" />Resume shop</button></form>
@@ -92,8 +107,8 @@ export default async function ShopDetail({ params, searchParams }: { params: Pro
         <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
           <h2 className="flex items-center gap-2 border-b px-5 py-4 font-bold"><Receipt className="size-4 text-emerald-600" />Payments ({payments.length})</h2>
           {payments.length ? <ul className="divide-y">{payments.map((payment) => <li key={payment.id} className="flex items-center justify-between gap-3 px-5 py-3 text-sm">
-            <div><p className="font-semibold">{pkr(payment.amount)} <span className="font-normal capitalize text-stone-500">· {payment.method}</span></p><p className="text-xs text-stone-500">{formatDateTime(payment.created_at)}{payment.reference ? ` · ${payment.reference}` : ''}</p></div>
-            <p className="text-right text-xs text-stone-500">{payment.months} month{payment.months === 1 ? '' : 's'}<br />until {formatDate(payment.period_end)}</p>
+            <div><p className="font-semibold">{formatMoney(payment.amount, payment.currency)} <span className="font-normal capitalize text-stone-500">· {payment.method}</span></p><p className="text-xs text-stone-500">{formatDateTime(payment.created_at)}{payment.reference ? ` · ${payment.reference}` : ''}</p></div>
+            <p className="text-right text-xs text-stone-500">{payment.months ? `${payment.months} month${payment.months === 1 ? '' : 's'}` : 'Plan change'}<br />until {formatDate(payment.period_end)}</p>
           </li>)}</ul> : <p className="p-8 text-center text-sm text-stone-500">No payments yet.</p>}
         </div>
       </div>
@@ -103,6 +118,14 @@ export default async function ShopDetail({ params, searchParams }: { params: Pro
         {proofs.length ? <PaymentProofList proofs={proofs} /> : <p className="p-8 text-center text-sm text-stone-500">The shop has not sent any proofs. Owners upload them from Billing.</p>}
         {waiting > 0 && <p className="border-t px-5 py-3 text-xs text-stone-500">Recording a payment above marks the waiting proofs as recorded.</p>}
       </div>
+
+      {billingEvents.length > 0 && <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+        <h2 className="flex items-center gap-2 border-b px-5 py-4 font-bold"><CreditCard className="size-4 text-sky-600" />Card billing (Paddle webhooks)</h2>
+        <ul className="divide-y text-sm">{billingEvents.map((event) => <li key={event.id} className="flex flex-wrap items-center justify-between gap-2 px-5 py-3">
+          <span><span className="font-mono text-xs">{event.type}</span>{event.outcome && <span className="text-stone-600"> — {event.outcome}</span>}</span>
+          <span className="text-xs text-stone-500">{formatDateTime(event.received_at)}</span>
+        </li>)}</ul>
+      </div>}
 
       <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
         <h2 className="flex items-center gap-2 font-bold"><History className="size-4 text-emerald-600" />History</h2>

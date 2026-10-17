@@ -75,6 +75,9 @@ async function selfHostedProxy(request: NextRequest, response: NextResponse) {
   const redirect = (to: string) => NextResponse.redirect(new URL(to, request.url))
   const isAdminPath = path === '/admin' || path.startsWith('/admin/')
 
+  // The partner program's pages (/partner and each partner's private /partner/<token>) are open to
+  // everyone, signed in or not: a partner may also be a shop owner, or the admin checking a page.
+  if (path === '/partner' || path.startsWith('/partner/')) return response
   const user = await getSessionUser(request.cookies.get(sessionCookieName())?.value)
   // The admin area does not exist for anyone else, signed in or not.
   if (isAdminPath) return user?.role === 'admin' ? response : NextResponse.rewrite(new URL('/404', request.url))
