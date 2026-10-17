@@ -2,7 +2,8 @@
 #   Every push and pull request: type check + lint, then the full end-to-end suite on the deployment
 #   stack (production build, MariaDB, nginx, MinIO, Mailpit).
 #   Push to cloudshoposprod (production): after both pass, the AWS server updates itself with
-#   `shopos update` (backup, pull, rebuild, health check, automatic rollback), started through AWS
+#   `shopos update` (backup, pull, rebuild, health check, automatic rollback) and the public demo
+#   follows (`shopos-demo up`), started through AWS
 #   Systems Manager by a deploy user that can do nothing else (shopos-infra/github.tf).
 # Repository settings → Secrets and variables → Actions:
 #   Secrets:   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  (shopos-infra outputs github_deploy_*)
@@ -76,7 +77,7 @@ jobs:
           set -euo pipefail
           id=$(aws ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
             --comment "GitHub deploy ${SHA::7}" --timeout-seconds 600 \
-            --parameters '{"commands":["cd /opt/shopos && shopos update </dev/null 2>&1 | tail -n 40 && test \"$(git rev-parse HEAD)\" = \"'"$SHA"'\""],"executionTimeout":["3000"]}' \
+            --parameters '{"commands":["cd /opt/shopos && shopos update </dev/null 2>&1 | tail -n 40 && test \"$(git rev-parse HEAD)\" = \"'"$SHA"'\" && (shopos-demo up 2>&1 | tail -n 3)"],"executionTimeout":["3000"]}' \
             --query Command.CommandId --output text)
           echo "SSM command $id"
           while :; do
