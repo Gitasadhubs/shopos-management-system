@@ -166,6 +166,10 @@ services:
       SHOPOS_PADDLE_PRICE_STARTER_YEAR: pri_e2e_starter_year
       SHOPOS_PADDLE_PRICE_GROWTH_MONTH: pri_e2e_growth_month
       SHOPOS_PADDLE_PRICE_GROWTH_YEAR: pri_e2e_growth_year
+      SHOPOS_PADDLE_TRIAL_PRICE_STARTER_MONTH: pri_e2e_trial_starter_month
+      SHOPOS_PADDLE_TRIAL_PRICE_STARTER_YEAR: pri_e2e_trial_starter_year
+      SHOPOS_PADDLE_TRIAL_PRICE_GROWTH_MONTH: pri_e2e_trial_growth_month
+      SHOPOS_PADDLE_TRIAL_PRICE_GROWTH_YEAR: pri_e2e_trial_growth_year
       SHOPOS_DB_PORT: 3306
       SHOPOS_DB_NAME: shopos
       SHOPOS_DB_USER: shopos

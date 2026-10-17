@@ -1,0 +1,95 @@
+# CI/CD for ShopOS.
+#   Every push and pull request: type check + lint, then the full end-to-end suite on the deployment
+#   stack (production build, MariaDB, nginx, MinIO, Mailpit).
+#   Push to cloudshoposprod (production): after both pass, the AWS server updates itself with
+#   `shopos update` (backup, pull, rebuild, health check, automatic rollback), started through AWS
+#   Systems Manager by a deploy user that can do nothing else (shopos-infra/github.tf).
+# Repository settings → Secrets and variables → Actions:
+#   Secrets:   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  (shopos-infra outputs github_deploy_*)
+#   Variables: AWS_REGION = ap-southeast-2, AWS_INSTANCE_ID = the server (output instance_id)
+name: CI/CD
+
+on:
+  push:
+    branches: [dev, cloudshoposprod, prod, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Type check and lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --fetch-retries=5
+      - run: npm run check
+
+  e2e:
+    name: End-to-end (deployment stack)
+    runs-on: ubuntu-24.04
+    needs: check
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the suite
+        run: bash scripts/e2e-ci.sh
+      - name: Keep the report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+  deploy:
+    name: Deploy to AWS
+    runs-on: ubuntu-24.04
+    needs: [check, e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/cloudshoposprod'
+    environment: production
+    timeout-minutes: 60
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: shopos update on the server
+        env:
+          INSTANCE: ${{ vars.AWS_INSTANCE_ID }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          id=$(aws ssm send-command --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
+            --comment "GitHub deploy ${SHA::7}" --timeout-seconds 600 \
+            --parameters '{"commands":["cd /opt/shopos && shopos update </dev/null 2>&1 | tail -n 40 && test \"$(git rev-parse HEAD)\" = \"'"$SHA"'\""],"executionTimeout":["3000"]}' \
+            --query Command.CommandId --output text)
+          echo "SSM command $id"
+          while :; do
+            status=$(aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE" --query Status --output text 2>/dev/null || echo Pending)
+            case $status in Success|Failed|TimedOut|Cancelled) break ;; esac
+            sleep 15
+          done
+          aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE" --query StandardOutputContent --output text
+          [ "$status" = Success ] || { echo "::error::Deploy $status"; exit 1; }
+      - name: Live check
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            curl -fsS --max-time 15 https://app.getshopos.online/api/health | grep -q '"ok":true' && { echo "app.getshopos.online is healthy"; exit 0; }
+            sleep 10
+          done
+          echo "::error::app.getshopos.online is not healthy after the deploy"; exit 1

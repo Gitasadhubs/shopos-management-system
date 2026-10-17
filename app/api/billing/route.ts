@@ -35,8 +35,9 @@ export async function GET(request: Request) {
       card: checkout && {
         environment: checkout.environment,
         client_token: checkout.client_token,
-        // Plan + interval pairs that have a Paddle price on this install.
-        available: checkout.prices,
+        // Plan + interval pairs that have a Paddle price on this install (with the 14-day trial, for a
+        // shop that is waiting for its card).
+        available: shop.subscription.needs_card ? checkout.trial_prices : checkout.prices,
         subscription: link && { live: link.live, cancel_scheduled: link.cancelScheduled, plan: link.plan, interval: link.interval },
       },
     })

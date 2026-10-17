@@ -178,8 +178,25 @@ and updates the shop. Without the `SHOPOS_PADDLE_*` settings, Billing offers tra
 5. For real money, apply for a live Paddle account (it reviews the website, which needs pricing,
    Terms, Privacy and Refund pages), then repeat steps 1–3 with the live account and `PADDLE_ENV=production`.
 
+**Trials that need a card.** Admin → Settings → "Require a card to start a trial": shops that sign up
+afterwards stay read-only until the owner adds a card in Paddle checkout (Billing opens by itself). They
+use the `SHOPOS_PADDLE_TRIAL_PRICE_*` prices (14 days free, then the plan; the setup script creates
+them), so nothing is charged until the trial ends. Earlier shops are not affected, and a transfer payment
+recorded by an admin also opens a waiting shop. Turn it on only with live Paddle keys.
+
 Prices are set in Paddle and shown from `lib/plans.ts`; keep the two equal. Only USD prices are
 expected (payments in another currency extend the plan but are not booked).
+
+## CI/CD (GitHub Actions)
+
+`.github/workflows/ci-cd.yml`: every push and pull request runs the type check and lint, then the
+whole end-to-end suite on the deployment stack (`scripts/e2e-ci.sh`, the Linux twin of
+`scripts/e2e.ps1 -Target preprod`). A push to `cloudshoposprod` that passes both is deployed: the AWS
+server runs `shopos update` (backup, pull, rebuild, health check, roll back on failure) through Systems
+Manager, then the workflow checks https://app.getshopos.online/api/health. The deploy user
+(`shopos-infra/github.tf`) can only send that command to that server; its key is in the repository
+secrets `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, with variables `AWS_REGION` and
+`AWS_INSTANCE_ID`.
 
 ## Day-end reports (email and WhatsApp)
 

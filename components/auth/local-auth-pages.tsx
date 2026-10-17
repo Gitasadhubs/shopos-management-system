@@ -154,7 +154,8 @@ export function LocalLoginPage() {
 }
 
 // Public signup: a new shop on a free trial, with the person signing up as its owner.
-export function LocalSignupPage() {
+// requireCard: trials need a card (admin setting); the owner adds it on Billing after confirming the email.
+export function LocalSignupPage({ requireCard = false }: { requireCard?: boolean }) {
   const [form, setForm] = useState({ shop_name: '', full_name: '', phone: '', email: '', password: '', confirm: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -186,7 +187,7 @@ export function LocalSignupPage() {
 
   if (created) {
     return (
-      <AuthShell title="Check your email" subtitle={`We sent a confirmation link to ${created}. Open it to activate your shop, then sign in.`}>
+      <AuthShell title="Check your email" subtitle={`We sent a confirmation link to ${created}. Open it to activate your shop, then sign in${requireCard ? ' and add your card to start the free trial' : ''}.`}>
         <div className="grid gap-3">
           <CelebrateIllustration className="mx-auto h-28 w-auto" />
           {error && <Notice tone="error">{error}</Notice>}
@@ -199,7 +200,7 @@ export function LocalSignupPage() {
 
   const set = (key: keyof typeof form) => (event: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [key]: event.target.value })
   return (
-    <AuthShell wide title="Create your shop" subtitle="Free for 14 days. No card needed.">
+    <AuthShell wide title="Create your shop" subtitle={requireCard ? 'Free for 14 days. You add a card to start; nothing is charged until the trial ends, and you can cancel any time.' : 'Free for 14 days. No card needed.'}>
       <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
         <div className="sm:col-span-2"><Field id="signup-shop" label="Shop name" required maxLength={120} value={form.shop_name} onChange={set('shop_name')} /></div>
         <Field id="signup-name" label="Your name" autoComplete="name" required maxLength={120} value={form.full_name} onChange={set('full_name')} />

@@ -11,23 +11,27 @@ import { LocalDataError } from '@/lib/local-db'
 export type PaddleEnvironment = 'sandbox' | 'production'
 
 const env = (name: string) => process.env[name]?.trim() || ''
-const PRICE_VARS: Record<CardPlanId, Record<BillingInterval, string>> = {
-  starter: { month: 'SHOPOS_PADDLE_PRICE_STARTER_MONTH', year: 'SHOPOS_PADDLE_PRICE_STARTER_YEAR' },
-  growth: { month: 'SHOPOS_PADDLE_PRICE_GROWTH_MONTH', year: 'SHOPOS_PADDLE_PRICE_GROWTH_YEAR' },
-}
+// Each plan has a price per interval, and the same price with a 14-day free trial (…_TRIAL_…): a shop
+// that signed up while trials need a card starts its trial with that one, so the card is charged
+// only when the trial ends.
+const priceVar = (plan: CardPlanId, interval: BillingInterval, trial: boolean) =>
+  `SHOPOS_PADDLE_${trial ? 'TRIAL_' : ''}PRICE_${plan.toUpperCase()}_${interval.toUpperCase()}`
 
 export function paddleEnvironment(): PaddleEnvironment {
   return env('SHOPOS_PADDLE_ENV') === 'production' ? 'production' : 'sandbox'
 }
 
-export function priceIdFor(plan: CardPlanId, interval: BillingInterval) {
-  return env(PRICE_VARS[plan][interval]) || null
+export function priceIdFor(plan: CardPlanId, interval: BillingInterval, trial = false) {
+  return env(priceVar(plan, interval, trial)) || null
 }
 
-// Which plan and interval a Paddle price belongs to, or null for a price this install does not sell.
+// Which plan and interval a Paddle price belongs to (trial prices included), or null for a price this
+// install does not sell.
 export function planForPrice(priceId: string | null | undefined): { plan: CardPlanId; interval: BillingInterval } | null {
   if (!priceId) return null
-  for (const plan of CARD_PLANS) for (const interval of ['month', 'year'] as const) if (priceIdFor(plan, interval) === priceId) return { plan, interval }
+  for (const plan of CARD_PLANS) for (const interval of ['month', 'year'] as const) {
+    if (priceIdFor(plan, interval) === priceId || priceIdFor(plan, interval, true) === priceId) return { plan, interval }
+  }
   return null
 }
 
@@ -35,8 +39,9 @@ export function planForPrice(priceId: string | null | undefined): { plan: CardPl
 export function paddleCheckoutConfig() {
   const token = env('SHOPOS_PADDLE_CLIENT_TOKEN')
   if (!token || !env('SHOPOS_PADDLE_WEBHOOK_SECRET')) return null
-  const prices = CARD_PLANS.flatMap((plan) => (['month', 'year'] as const).filter((interval) => priceIdFor(plan, interval)).map((interval) => ({ plan, interval })))
-  return prices.length ? { client_token: token, environment: paddleEnvironment(), prices } : null
+  const pairs = (trial: boolean) => CARD_PLANS.flatMap((plan) => (['month', 'year'] as const).filter((interval) => priceIdFor(plan, interval, trial)).map((interval) => ({ plan, interval })))
+  const prices = pairs(false)
+  return prices.length ? { client_token: token, environment: paddleEnvironment(), prices, trial_prices: pairs(true) } : null
 }
 
 // Paddle signs each webhook: header "ts=<unix seconds>;h1=<hex HMAC-SHA256 of `${ts}:${raw body}`>"

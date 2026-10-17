@@ -16,6 +16,8 @@ export type ShopSubscription = {
   plan: string; plan_name: string; state: SubscriptionState; price: number; currency: Currency; interval: BillingInterval; monthly_price: number
   current_period_end: string; days_left: number; can_write: boolean
   provider: 'manual' | 'paddle'; cancel_at_period_end: boolean; past_due: boolean
+  // The trial waits for a card (signed up while trials needed one): read-only until it is added.
+  needs_card: boolean
 }
 // report_*: the automatic day-end report (lib/day-end.ts).
 export type ShopReportSettings = { report_enabled: boolean; report_time: string; report_email: string | null; report_whatsapp: string | null; report_last_sent_on: string | null }
@@ -45,13 +47,17 @@ export function subscriptionState(status: string, periodEnd: Date | string, now 
 // The subscription columns every shop query reads (lib/local-auth.ts reads them for the session too).
 export const SUBSCRIPTION_COLUMNS = `subscriptions.plan AS sub_plan, subscriptions.status AS sub_status, subscriptions.price AS sub_price,
   subscriptions.currency AS sub_currency, subscriptions.billing_interval AS sub_interval, subscriptions.provider AS sub_provider,
-  subscriptions.provider_status AS sub_provider_status, subscriptions.cancel_at_period_end AS sub_cancel, subscriptions.current_period_end AS sub_period_end`
+  subscriptions.provider_status AS sub_provider_status, subscriptions.cancel_at_period_end AS sub_cancel, subscriptions.current_period_end AS sub_period_end,
+  subscriptions.card_required AS sub_card_required`
 
 export function subscriptionFromRow(row: RowDataPacket): ShopSubscription {
   const provider = row.sub_provider === 'paddle' ? 'paddle' : 'manual'
   const cancel = Boolean(row.sub_cancel)
-  const renewing = provider === 'paddle' && !cancel && row.sub_status === 'active'
+  // A card subscription (paid, or in Paddle's free trial) renews by itself; its renewal gets the grace days.
+  const renewing = provider === 'paddle' && !cancel && (row.sub_status === 'active' || row.sub_status === 'trialing')
   const state = subscriptionState(row.sub_status, row.sub_period_end, Date.now(), renewing ? CARD_GRACE_DAYS * DAY : 0)
+  // Signed up while trials needed a card, and has neither a card subscription nor a payment yet.
+  const needsCard = Boolean(row.sub_card_required) && state === 'trialing' && provider !== 'paddle'
   const interval: BillingInterval = isInterval(row.sub_interval) ? row.sub_interval : 'month'
   const price = Number(row.sub_price ?? PLAN_PRICE_PKR)
   const plan = row.sub_plan ?? 'basic'
@@ -65,11 +71,31 @@ export function subscriptionFromRow(row: RowDataPacket): ShopSubscription {
     monthly_price: monthlyValue(price, interval),
     current_period_end: iso(row.sub_period_end),
     days_left: Math.max(0, Math.ceil((new Date(row.sub_period_end).getTime() - Date.now()) / DAY)),
-    can_write: state === 'trialing' || state === 'active',
+    can_write: (state === 'trialing' || state === 'active') && !needsCard,
     provider,
     cancel_at_period_end: cancel,
     past_due: provider === 'paddle' && row.sub_provider_status === 'past_due',
+    needs_card: needsCard,
   }
+}
+
+// --- platform settings (/admin/settings) ---------------------------------------------------------
+
+export type PlatformSettings = { require_card_for_trial: boolean }
+const SETTING_DEFAULTS: PlatformSettings = { require_card_for_trial: false }
+
+export async function getPlatformSettings(db?: Queryable): Promise<PlatformSettings> {
+  const [rows] = await (db ?? (await getPool())).query<RowDataPacket[]>('SELECT name, value FROM platform_settings')
+  const stored = Object.fromEntries(rows.map((row) => [row.name as string, row.value as string]))
+  return { require_card_for_trial: stored.require_card_for_trial === undefined ? SETTING_DEFAULTS.require_card_for_trial : stored.require_card_for_trial === 'true' }
+}
+
+export async function setPlatformSettings(changes: Partial<PlatformSettings>) {
+  const pool = await getPool()
+  for (const [name, value] of Object.entries(changes)) {
+    await pool.query('INSERT INTO platform_settings (name, value, updated_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = VALUES(updated_at)', [name, String(value), new Date()])
+  }
+  return getPlatformSettings(pool)
 }
 
 const SHOP_SELECT = `SELECT shops.id, shops.name, shops.phone, shops.address, shops.receipt_footer, shops.timezone, shops.created_at,
@@ -110,15 +136,17 @@ export async function logEvent(db: Queryable, shopId: string, event: string, det
 export async function createShopWithTrial(connection: PoolConnection, input: ShopInput & { referred_by?: string | null }) {
   const id = randomUUID()
   const now = new Date()
+  // While trials need a card, the shop starts read-only and its trial starts when the card is added.
+  const cardRequired = (await getPlatformSettings(connection)).require_card_for_trial
   await connection.query(
     'INSERT INTO shops (id, name, phone, address, receipt_footer, timezone, referred_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [id, input.name.trim(), input.phone?.trim() || null, input.address?.trim() || null, input.receipt_footer?.trim() || 'Thank you for shopping with us!', input.timezone ?? DEFAULT_TIMEZONE, input.referred_by ?? null, now, now],
   )
   await connection.query(
-    'INSERT INTO subscriptions (shop_id, plan, status, price, currency, current_period_end, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, 'basic', 'trialing', PLAN_PRICE_PKR, 'PKR', new Date(now.getTime() + TRIAL_DAYS * DAY), now, now],
+    'INSERT INTO subscriptions (shop_id, plan, status, price, currency, current_period_end, card_required, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, 'basic', 'trialing', PLAN_PRICE_PKR, 'PKR', new Date(now.getTime() + TRIAL_DAYS * DAY), cardRequired ? 1 : 0, now, now],
   )
-  await logEvent(connection, id, 'trial_started', `${TRIAL_DAYS}-day free trial`, null)
+  await logEvent(connection, id, 'trial_started', cardRequired ? `${TRIAL_DAYS}-day free trial, once a card is added` : `${TRIAL_DAYS}-day free trial`, null)
   return id
 }
 

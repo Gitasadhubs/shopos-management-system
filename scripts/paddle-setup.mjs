@@ -47,22 +47,27 @@ for (const plan of PLANS) {
     console.log(`found product ${plan.name} (${product.id})`)
   }
   const prices = await call('GET', `/prices?product_id=${product.id}&status=active&per_page=200`)
-  for (const [interval, amount] of Object.entries(plan.prices)) {
-    let price = prices.find((item) => item.billing_cycle?.interval === interval && item.billing_cycle?.frequency === 1 && item.unit_price?.currency_code === 'USD' && Number(item.unit_price?.amount) === amount)
+  // Each price twice: as is, and with a 14-day free trial (charged when the trial ends) for shops
+  // that start their trial with a card.
+  for (const [interval, amount] of Object.entries(plan.prices)) for (const trial of [false, true]) {
+    const label = `${interval}ly price $${amount / 100}${trial ? ' with 14-day trial' : ''}`
+    let price = prices.find((item) => item.billing_cycle?.interval === interval && item.billing_cycle?.frequency === 1 && item.unit_price?.currency_code === 'USD' && Number(item.unit_price?.amount) === amount
+      && (trial ? item.trial_period?.interval === 'day' && item.trial_period?.frequency === 14 : !item.trial_period))
     if (!price) {
       price = await call('POST', '/prices', {
         product_id: product.id,
-        description: `${plan.name} ${interval === 'year' ? 'yearly' : 'monthly'}`,
-        name: interval === 'year' ? 'Yearly' : 'Monthly',
+        description: `${plan.name} ${interval === 'year' ? 'yearly' : 'monthly'}${trial ? ', 14-day free trial' : ''}`,
+        name: `${interval === 'year' ? 'Yearly' : 'Monthly'}${trial ? ' (14 days free)' : ''}`,
         unit_price: { amount: String(amount), currency_code: 'USD' },
         billing_cycle: { interval, frequency: 1 },
+        ...(trial ? { trial_period: { interval: 'day', frequency: 14 } } : {}),
         quantity: { minimum: 1, maximum: 1 },
       })
-      console.log(`  created ${interval}ly price $${amount / 100} (${price.id})`)
+      console.log(`  created ${label} (${price.id})`)
     } else {
-      console.log(`  found ${interval}ly price $${amount / 100} (${price.id})`)
+      console.log(`  found ${label} (${price.id})`)
     }
-    lines.push(`SHOPOS_PADDLE_PRICE_${plan.key}_${interval.toUpperCase()}=${price.id}`)
+    lines.push(`SHOPOS_PADDLE_${trial ? 'TRIAL_' : ''}PRICE_${plan.key}_${interval.toUpperCase()}=${price.id}`)
   }
 }
 

@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { endSession } from '@/lib/local-auth'
 import { LocalDataError } from '@/lib/local-db'
 import { markAffiliatePaid, setAffiliateStatus } from '@/lib/local-affiliates'
-import { changeSubscription, recordSubscriptionPayment, type SubscriptionAction } from '@/lib/local-platform'
+import { changeSubscription, recordSubscriptionPayment, setPlatformSettings, type SubscriptionAction } from '@/lib/local-platform'
 import { formatMoney, formatTotals } from '@/lib/money'
 import { clearSessionCookieOnAction, requireAdminForAction } from './session'
 
@@ -73,6 +73,13 @@ export async function changeSubscriptionAction(formData: FormData) {
     back(id, 'error', error instanceof LocalDataError ? error.message : 'Could not update the subscription.')
   }
   back(id, 'notice', DONE[parsed.data.action])
+}
+
+export async function savePlatformSettingsAction(formData: FormData) {
+  await requireAdminForAction()
+  const settings = await setPlatformSettings({ require_card_for_trial: formData.get('require_card_for_trial') === 'on' })
+  revalidatePath('/admin/settings')
+  redirect(`/admin/settings?notice=${encodeURIComponent(settings.require_card_for_trial ? 'Saved. New shops add a card to start their trial.' : 'Saved. New shops start their trial without a card.')}`)
 }
 
 export async function adminSignOut() {

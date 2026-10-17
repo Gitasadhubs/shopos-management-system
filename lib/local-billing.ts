@@ -67,10 +67,11 @@ async function onTransactionCompleted(connection: PoolConnection, txn: PaddleTra
     "cancel_at_period_end = IF(provider_subscription_id <=> ?, cancel_at_period_end, 0)",
     "provider_status = IF(provider_subscription_id <=> ?, provider_status, 'active')",
     'provider_synced_at = IF(provider_subscription_id <=> ?, provider_synced_at, NULL)',
-    // An admin's suspension stays until the admin resumes the shop.
-    "status = IF(status = 'suspended', 'suspended', 'active')", "provider = 'paddle'", 'provider_customer_id = COALESCE(?, provider_customer_id)', 'provider_subscription_id = ?', 'current_period_end = ?', 'updated_at = ?',
+    // An admin's suspension stays until the admin resumes the shop. A $0 transaction (the start of a
+    // card trial) leaves a trial a trial; money makes it active.
+    "status = IF(status = 'suspended', 'suspended', IF(?, 'active', status))", "provider = 'paddle'", 'provider_customer_id = COALESCE(?, provider_customer_id)', 'provider_subscription_id = ?', 'current_period_end = ?', 'updated_at = ?',
   ]
-  const values: unknown[] = [txn.subscription_id, txn.subscription_id, txn.subscription_id, txn.customer_id, txn.subscription_id, periodEnd, now]
+  const values: unknown[] = [txn.subscription_id, txn.subscription_id, txn.subscription_id, amount > 0 ? 1 : 0, txn.customer_id, txn.subscription_id, periodEnd, now]
   if (plan) {
     columns.push('plan = ?', 'billing_interval = ?', 'price = ?', "currency = 'USD'")
     values.push(plan, interval, PLANS[plan].prices[interval] ?? amount)
@@ -80,10 +81,11 @@ async function onTransactionCompleted(connection: PoolConnection, txn: PaddleTra
   if (amount > 0 && isCurrency(currency)) {
     await insertPayment(connection, shopId, { amount, currency, method: 'card', reference: txn.id, providerRef: txn.id, months, periodEnd, actorId: null }, now)
     await logEvent(connection, shopId, 'payment', `${formatMoney(amount, currency)} by card · ${planLabel}${months ? '' : ' (plan change)'} · paid until ${day(periodEnd)}`, null)
-  } else {
-    // A 100% discount, or a currency this install does not keep accounts in: the time is given, no payment is booked.
-    await logEvent(connection, shopId, 'payment', `${amount > 0 ? `${currency} ${amount}` : 'No charge'} by card · ${planLabel} · paid until ${day(periodEnd)}`, null)
+  } else if (amount > 0) {
+    // A currency this install does not keep accounts in: the time is given, no payment is booked.
+    await logEvent(connection, shopId, 'payment', `${currency} ${amount} by card · ${planLabel} · paid until ${day(periodEnd)}`, null)
   }
+  // ($0: the start of a card trial, logged with the subscription, or a 100% discount.)
   return { shopId, outcome: `paid until ${day(periodEnd)}` }
 }
 
@@ -104,7 +106,14 @@ async function onSubscriptionChange(connection: PoolConnection, sub: PaddleSubsc
     columns.push('plan = ?', 'billing_interval = ?', 'price = ?', "currency = 'USD'")
     values.push(plan, interval, PLANS[plan].prices[interval] ?? 0)
   }
+  // A card trial: the shop's trial runs until Paddle's (it charges the card that day). Never shortened.
+  const trialEnd = sub.status === 'trialing' && sub.current_billing_period?.ends_at ? new Date(sub.current_billing_period.ends_at) : null
+  if (trialEnd && Number.isFinite(trialEnd.getTime())) {
+    columns.push('current_period_end = GREATEST(current_period_end, ?)')
+    values.push(trialEnd)
+  }
   await connection.query(`UPDATE subscriptions SET ${columns.join(', ')} WHERE shop_id = ?`, [...values, shopId])
+  if (trialEnd && row.provider_subscription_id !== sub.id) await logEvent(connection, shopId, 'card_trial', `Card added · trial until ${day(trialEnd)}, then ${plan ? `${PLANS[plan].name} ${interval === 'year' ? 'yearly' : 'monthly'}` : 'the card plan'}`, null)
 
   const wasCancelled = Boolean(row.cancel_at_period_end) && row.provider_subscription_id === sub.id
   if (cancel && !wasCancelled) {

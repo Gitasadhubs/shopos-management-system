@@ -96,6 +96,9 @@ async function selfHostedProxy(request: NextRequest, response: NextResponse) {
   if (signedOutOnly.includes(path)) return redirect(home)
   // Platform admins have no shop; their workspace is the admin area.
   if (user.role === 'admin') return redirect('/admin')
+  // A shop waiting for its card (trials need one): the owner adds it on Billing first. Staff see a
+  // notice in the app instead.
+  if (user.shop?.subscription.needs_card && user.role === 'owner' && path !== '/billing' && !path.startsWith('/billing/')) return redirect('/billing')
   const rule = roleRoutes.find(({ prefix }) => path === prefix || path.startsWith(`${prefix}/`))
   if (rule && !can(user.role, rule.permission)) return redirect('/dashboard')
   return response

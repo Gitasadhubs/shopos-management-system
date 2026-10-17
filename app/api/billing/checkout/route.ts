@@ -15,14 +15,17 @@ export async function POST(request: Request) {
     const parsed = schema.safeParse(await request.json().catch(() => null))
     if (!parsed.success) return jsonResponse(null, 'Choose a plan.', 400)
     const config = paddleCheckoutConfig()
-    const priceId = config && priceIdFor(parsed.data.plan, parsed.data.interval)
-    if (!config || !priceId) return jsonResponse(null, 'Card payments are not available yet. Pay by bank transfer below, or contact us.', 503, 'paddle_not_configured')
+    // A shop waiting for its card starts the 14-day trial: the trial price charges nothing today.
+    const trial = shop.subscription.needs_card
+    const priceId = config && priceIdFor(parsed.data.plan, parsed.data.interval, trial)
+    if (!config || !priceId) return jsonResponse(null, trial ? 'Card sign-up is not available right now. Contact us and we will start your trial.' : 'Card payments are not available yet. Pay by bank transfer below, or contact us.', 503, 'paddle_not_configured')
     const link = await paddleLink(shop.id)
     if (link?.live) return jsonResponse(null, 'Your card plan is already active. Use "Change plan" to switch.', 409, 'already_subscribed')
     return jsonResponse({
       environment: config.environment,
       client_token: config.client_token,
       price_id: priceId,
+      trial,
       email: user.email,
       custom_data: { shop_id: shop.id },
     })

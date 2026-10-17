@@ -47,7 +47,7 @@ const navigation: NavItem[] = [
   { href: '/account', label: 'Account', permission: 'dashboard', icon: UserRound, group: 'Manage', selfHostedOnly: true },
 ]
 
-type Subscription = { state: 'trialing' | 'active' | 'suspended' | 'expired'; days_left: number; current_period_end: string; can_write: boolean }
+type Subscription = { state: 'trialing' | 'active' | 'suspended' | 'expired'; days_left: number; current_period_end: string; can_write: boolean; needs_card?: boolean }
 
 type SaleRow = {
   id: string
@@ -192,8 +192,8 @@ function Header({ onMenu }: { onMenu: () => void }) {
   return <>
     {roleError && <div role="alert" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">{roleError}</div>}
     {subscription && !subscription.can_write && <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border-b border-rose-200 bg-rose-50 px-4 py-2 text-center text-sm text-rose-800">
-      <span>{subscription.state === 'suspended' ? 'This shop is suspended.' : 'Your subscription has ended.'} The shop is read-only until it is renewed.</span>
-      {owner ? <Link href="/billing" className="font-semibold underline underline-offset-2">Renew in Billing</Link> : <span>Ask the shop owner to renew.</span>}
+      <span>{subscription.needs_card ? 'Your free trial starts once a card is added.' : subscription.state === 'suspended' ? 'This shop is suspended.' : 'Your subscription has ended.'} {subscription.needs_card ? 'Until then the shop is read-only.' : 'The shop is read-only until it is renewed.'}</span>
+      {owner ? <Link href="/billing" className="font-semibold underline underline-offset-2">{subscription.needs_card ? "Add a card in Billing" : "Renew in Billing"}</Link> : <span>{subscription.needs_card ? "Ask the shop owner to add a card." : "Ask the shop owner to renew."}</span>}
     </div>}
     {subscription?.state === 'trialing' && subscription.days_left <= 3 && owner && <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">Your free trial ends in {subscription.days_left} day{subscription.days_left === 1 ? '' : 's'}. <Link href="/billing" className="font-semibold underline underline-offset-2">See plans</Link></div>}
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b bg-white/90 px-4 backdrop-blur sm:px-8">

@@ -19,7 +19,7 @@ import { playSound } from '@/lib/sounds'
 type Proof = { id: string; url: string; content_type: string; note: string | null; created_at: string; reviewed_at: string | null }
 type Subscription = {
   plan: string; plan_name: string; state: 'trialing' | 'active' | 'suspended' | 'expired'; price: number; currency: Currency; interval: BillingInterval
-  current_period_end: string; days_left: number; provider: 'manual' | 'paddle'; cancel_at_period_end: boolean; past_due: boolean
+  current_period_end: string; days_left: number; provider: 'manual' | 'paddle'; cancel_at_period_end: boolean; past_due: boolean; needs_card: boolean
 }
 type CardInfo = {
   environment: 'sandbox' | 'production'
@@ -189,7 +189,7 @@ function CardPlans({ data, reload }: { data: Billing; reload: () => Promise<void
       listenToPaddle((event) => {
         if (event.name !== 'checkout.completed') return
         setNotice('Payment received. Activating your plan…')
-        setWaitingFor(() => (billing: Billing) => billing.shop.subscription.provider === 'paddle' && billing.shop.subscription.state === 'active' && Boolean(billing.card?.subscription?.live))
+        setWaitingFor(() => (billing: Billing) => billing.shop.subscription.provider === 'paddle' && !billing.shop.subscription.needs_card && (billing.shop.subscription.state === 'active' || billing.shop.subscription.state === 'trialing') && Boolean(billing.card?.subscription?.live))
       })
       paddle.Checkout.open({
         items: [{ priceId: checkout.price_id, quantity: 1 }],
@@ -294,12 +294,13 @@ function CardPlans({ data, reload }: { data: Billing; reload: () => Promise<void
               {isCurrent
                 ? <Button className="mt-4" variant="outline" disabled>Current plan</Button>
                 : <Button className="mt-4 bg-emerald-600 hover:bg-emerald-700" disabled={!available(id) || Boolean(busy)} onClick={() => void (current?.live ? change(id) : pay(id))}>
-                  {busy === id && <LoaderCircle className="mr-2 size-4 animate-spin" />}{!available(id) ? 'Not available yet' : current?.live ? `Switch to ${plan.name}` : sub.state === 'trialing' ? `Start ${plan.name}` : `Pay for ${plan.name}`}
+                  {busy === id && <LoaderCircle className="mr-2 size-4 animate-spin" />}{!available(id) ? 'Not available yet' : current?.live ? `Switch to ${plan.name}` : sub.needs_card ? `Start free trial: ${plan.name}` : sub.state === 'trialing' ? `Start ${plan.name}` : `Pay for ${plan.name}`}
                 </Button>}
             </div>
           })}
         </div>
-        {sub.state === 'trialing' && !current?.live && <p className="text-xs text-muted-foreground">Paying now starts your paid plan today; the trial ends when you pay.</p>}
+        {sub.needs_card && <p className="text-sm text-stone-700">Nothing is charged today. Your card is charged when the 14-day trial ends; cancel any time before that and you pay nothing.</p>}
+        {sub.state === 'trialing' && !sub.needs_card && !current?.live && <p className="text-xs text-muted-foreground">Paying now starts your paid plan today; the trial ends when you pay.</p>}
         {current && <div className="flex flex-wrap gap-2 border-t pt-4">
           <Button variant="outline" disabled={busy === 'overview'} onClick={() => void portal('overview')}>{busy === 'overview' ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : <ExternalLink className="mr-2 size-4" />}Manage card, invoices or cancel</Button>
         </div>}
@@ -316,12 +317,12 @@ export default function BillingPage() {
   if (billing.error && !data) return <Notice tone="error">{billing.error}</Notice>
   if (!data) return <SkeletonRows rows={5} />
   const sub = data.shop.subscription
-  const state = STATE_COPY[sub.state]
+  const state = sub.needs_card ? { label: 'Card needed', tone: 'bg-amber-100 text-amber-800' } : STATE_COPY[sub.state]
   const details = data.payment_details
   const cardLive = Boolean(data.card?.subscription?.live)
   const message = `Assalam-o-Alaikum! Payment for ShopOS — shop "${data.shop.name}" (ID ${data.shop.id.slice(0, 8)}). Screenshot attached.`
   const renewing = sub.provider === 'paddle' && !sub.cancel_at_period_end
-  const headline = sub.state === 'trialing' ? `${sub.days_left} day${sub.days_left === 1 ? '' : 's'} left in your free trial`
+  const headline = sub.needs_card ? 'Add a card to start your 14-day free trial' : sub.state === 'trialing' ? `${sub.days_left} day${sub.days_left === 1 ? '' : 's'} left in your free trial`
     : sub.state === 'active' ? (renewing ? `Renews on ${shortDate(sub.current_period_end)}` : `Paid until ${shortDate(sub.current_period_end)}`)
     : sub.state === 'suspended' ? 'Your shop is suspended' : 'Your subscription has ended'
   const pkrPrice = PLANS.basic.prices.month!
@@ -335,7 +336,7 @@ export default function BillingPage() {
             <Badge className={`${state.tone} border-0`}>{state.label}</Badge>
             <h1 className="mt-3 text-3xl font-bold">Billing</h1>
             <p className="mt-1 text-lg text-emerald-50">{headline}</p>
-            <p className="mt-1 text-sm text-emerald-100">{sub.state === 'expired' || sub.state === 'suspended' ? 'Your data is safe. The shop is read-only until the plan is renewed.' : `Current period ends ${shortDate(sub.current_period_end)}.`}</p>
+            <p className="mt-1 text-sm text-emerald-100">{sub.needs_card ? 'Choose a plan below and add your card. Nothing is charged today; the shop opens as soon as the card is added.' : sub.state === 'expired' || sub.state === 'suspended' ? 'Your data is safe. The shop is read-only until the plan is renewed.' : `Current period ends ${shortDate(sub.current_period_end)}.`}</p>
           </div>
           <RocketIllustration className="hidden h-36 w-auto shopos-float sm:block" />
         </div>

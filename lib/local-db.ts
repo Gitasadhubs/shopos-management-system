@@ -610,6 +610,17 @@ const migrations: string[][] = [
       KEY billing_events_shop_idx (shop_id, received_at)
     ) ${TABLE_OPTIONS}`,
   ],
+  [
+    // Settings for the whole service, changed by platform admins (lib/local-platform.ts, /admin/settings).
+    `CREATE TABLE IF NOT EXISTS platform_settings (
+      name VARCHAR(60) NOT NULL PRIMARY KEY,
+      value VARCHAR(500) NOT NULL,
+      updated_at DATETIME(3) NOT NULL
+    ) ${TABLE_OPTIONS}`,
+    // card_required: the shop signed up while trials needed a card, so it stays read-only until a card
+    // subscription (in its Paddle trial) or a payment is in place.
+    `ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS card_required TINYINT(1) NOT NULL DEFAULT 0 AFTER cancel_at_period_end`,
+  ],
 ]
 
 // Survives Next dev hot reloads, which would otherwise open a new pool per edit.

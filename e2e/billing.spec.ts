@@ -37,9 +37,10 @@ async function send(event: object) {
 type Card = { shopId: string; subscriptionId: string; customerId: string }
 const newCard = (shopId: string): Card => ({ shopId, subscriptionId: paddleId('sub'), customerId: paddleId('ctm') })
 
-const item = (plan: keyof typeof PRICES, interval: 'month' | 'year') => [{ quantity: 1, price: { id: PRICES[plan][interval], billing_cycle: { interval, frequency: 1 } } }]
+// trial: the price with a 14-day free trial (shops that start their trial with a card).
+const item = (plan: keyof typeof PRICES, interval: 'month' | 'year', trial = false) => [{ quantity: 1, price: { id: trial ? `pri_e2e_trial_${plan}_${interval}` : PRICES[plan][interval], billing_cycle: { interval, frequency: 1 } } }]
 
-function transaction(card: Card, options: { plan?: keyof typeof PRICES; interval?: 'month' | 'year'; cents: number; start: Date; end: Date; origin?: string; id?: string; eventId?: string }) {
+function transaction(card: Card, options: { plan?: keyof typeof PRICES; interval?: 'month' | 'year'; trial?: boolean; cents: number; start: Date; end: Date; origin?: string; id?: string; eventId?: string }) {
   const { plan = 'starter', interval = 'month' } = options
   return {
     event_id: options.eventId ?? paddleId('evt'),
@@ -54,13 +55,13 @@ function transaction(card: Card, options: { plan?: keyof typeof PRICES; interval
       currency_code: 'USD',
       custom_data: { shop_id: card.shopId },
       billing_period: { starts_at: options.start.toISOString(), ends_at: options.end.toISOString() },
-      items: item(plan, interval),
+      items: item(plan, interval, options.trial),
       details: { totals: { subtotal: String(options.cents), discount: '0', tax: '0', total: String(options.cents), grand_total: String(options.cents) } },
     },
   }
 }
 
-function subscription(card: Card, options: { type?: string; plan?: keyof typeof PRICES; interval?: 'month' | 'year'; status?: string; cancelAt?: Date; occurredAt?: Date; end?: Date } = {}) {
+function subscription(card: Card, options: { type?: string; plan?: keyof typeof PRICES; interval?: 'month' | 'year'; trial?: boolean; status?: string; cancelAt?: Date; occurredAt?: Date; end?: Date } = {}) {
   const { plan = 'starter', interval = 'month' } = options
   return {
     event_id: paddleId('evt'),
@@ -72,7 +73,7 @@ function subscription(card: Card, options: { type?: string; plan?: keyof typeof 
       customer_id: card.customerId,
       currency_code: 'USD',
       custom_data: { shop_id: card.shopId },
-      items: item(plan, interval),
+      items: item(plan, interval, options.trial),
       current_billing_period: { starts_at: new Date().toISOString(), ends_at: (options.end ?? new Date(Date.now() + 30 * DAY)).toISOString() },
       scheduled_change: options.cancelAt ? { action: 'cancel', effective_at: options.cancelAt.toISOString() } : null,
     },
@@ -261,4 +262,57 @@ test('only the owner can start a card payment', async () => {
   expect((await manager.context.get('/api/billing')).status()).toBe(403)
   await manager.context.dispose()
   await shop.context.dispose()
+})
+
+test('when trials need a card, a new shop is read-only until it adds one; the card is charged when the trial ends', async ({ page, browser }) => {
+  // Turn the requirement on (admin Settings). Tests run one at a time, so no other test signs up meanwhile.
+  await page.goto('/admin/settings')
+  await page.getByLabel('Require a card to start a trial').check()
+  await page.getByRole('button', { name: 'Save settings' }).click()
+  await expect(page.getByRole('status')).toContainText('New shops add a card')
+  try {
+    const shop = await signUpShop(uniqueName('Card First Shop'))
+    const me = async () => (await (await shop.context.get('/api/auth/me')).json()).data.user.shop.subscription
+    expect(await me()).toMatchObject({ state: 'trialing', needs_card: true, can_write: false })
+    expect((await shop.context.post('/api/customers', { data: { name: 'Too early' } })).status()).toBe(402)
+
+    // The owner is sent to Billing, which offers the trial prices.
+    const owner = await browserContextFor(browser, shop.context)
+    const ownerPage = await owner.newPage()
+    await ownerPage.goto('/dashboard')
+    await expect(ownerPage).toHaveURL(/\/billing$/)
+    await expect(ownerPage.getByText('Add a card to start your 14-day free trial')).toBeVisible()
+    await expect(ownerPage.getByRole('button', { name: 'Start free trial: Growth' })).toBeVisible()
+    const checkout = await (await shop.context.post('/api/billing/checkout', { data: { plan: 'starter', interval: 'month' } })).json()
+    expect(checkout.data).toMatchObject({ price_id: 'pri_e2e_trial_starter_month', trial: true })
+
+    // Paddle: the subscription starts in its 14-day trial, with a $0 transaction.
+    const card = newCard(shop.shopId)
+    const trialEnd = new Date(Date.now() + 14 * DAY)
+    await send(subscription(card, { type: 'subscription.created', status: 'trialing', trial: true, end: trialEnd }))
+    await send(transaction(card, { trial: true, cents: 0, start: new Date(), end: trialEnd }))
+    const trialing = await me()
+    expect(trialing).toMatchObject({ state: 'trialing', needs_card: false, can_write: true, provider: 'paddle', plan: 'starter' })
+    expect(Math.abs(new Date(trialing.current_period_end).getTime() - trialEnd.getTime())).toBeLessThan(1000)
+    expect((await billingOf(shop.context)).payments).toHaveLength(0)
+    expect((await shop.context.post('/api/customers', { data: { name: 'Now open' } })).status()).toBe(201)
+    await ownerPage.goto('/dashboard')
+    await expect(ownerPage).toHaveURL(/\/dashboard$/)
+
+    // The trial ends and Paddle charges the card.
+    await send(transaction(card, { cents: 900, start: trialEnd, end: new Date(trialEnd.getTime() + 30 * DAY), origin: 'subscription_recurring' }))
+    expect(await me()).toMatchObject({ state: 'active', needs_card: false })
+    expect((await billingOf(shop.context)).payments).toEqual([expect.objectContaining({ amount: 9, currency: 'USD', months: 1 })])
+    await owner.close()
+    await shop.context.dispose()
+  } finally {
+    await page.goto('/admin/settings')
+    await page.getByLabel('Require a card to start a trial').uncheck()
+    await page.getByRole('button', { name: 'Save settings' }).click()
+    await expect(page.getByRole('status')).toContainText('without a card')
+  }
+  // Shops that sign up now start as before.
+  const later = await signUpShop(uniqueName('No Card Shop'))
+  expect((await (await later.context.get('/api/auth/me')).json()).data.user.shop.subscription).toMatchObject({ needs_card: false, can_write: true })
+  await later.context.dispose()
 })
