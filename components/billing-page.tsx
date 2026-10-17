@@ -357,7 +357,7 @@ export default function BillingPage() {
             <p>Receipts and invoices come by email from Paddle. Change your plan or card below.</p>
           </CardContent>
         </Card> : <Card className="shopos-rise lg:col-span-2">
-          <CardHeader><CardTitle className="text-base">{data.card ? 'Paying from Pakistan? Pay in PKR' : 'How to pay'}</CardTitle><p className="text-xs text-muted-foreground">Send {formatMoney(pkrPrice, 'PKR')} per month (or several months at once) by bank transfer or mobile wallet, then share the receipt. We activate within 24 hours.</p></CardHeader>
+          <CardHeader><CardTitle className="text-base">{data.card ? 'Or pay in rupees (PKR)' : 'How to pay'}</CardTitle><p className="text-xs text-muted-foreground">Send {formatMoney(pkrPrice, 'PKR')} per month (or several months at once) by bank transfer or mobile wallet, then share the receipt. We activate within 24 hours.</p></CardHeader>
           <CardContent className="grid gap-4 sm:grid-cols-2">
             {details.account_number && <div className="rounded-xl border p-4 text-sm"><p className="mb-2 flex items-center gap-2 font-semibold"><Landmark className="size-4 text-emerald-600" />{details.bank_name || 'Bank transfer'}</p>{details.account_title && <p>{details.account_title}</p>}<p>Account: <span className="font-mono">{details.account_number}</span></p>{details.iban && <p>IBAN: <span className="font-mono">{details.iban}</span></p>}</div>}
             {details.wallet && <div className="rounded-xl border p-4 text-sm"><p className="mb-2 flex items-center gap-2 font-semibold"><Smartphone className="size-4 text-emerald-600" />JazzCash / EasyPaisa</p><p className="font-mono">{details.wallet}</p>{details.account_title && <p>{details.account_title}</p>}</div>}

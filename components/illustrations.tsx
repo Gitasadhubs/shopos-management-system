@@ -54,7 +54,7 @@ export function StorefrontIllustration({ className }: Props) {
       <path d="M298 256c-2-22 6-38 16-40 8 6 10 22 4 40" fill={C.green} stroke={C.ink} strokeWidth="3" />
       <rect x="300" y="238" width="22" height="18" rx="3" fill={C.rose} stroke={C.ink} strokeWidth="3" />
       <circle cx="40" cy="150" r="11" fill={C.amber} stroke={C.ink} strokeWidth="2.5" />
-      <text x="40" y="154.5" textAnchor="middle" fontSize="12" fontWeight="800" fill={C.ink} fontFamily="system-ui, sans-serif">₨</text>
+      <path d="M35 150l3.5 3.5 6.5-7" fill="none" stroke={C.ink} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
       <circle cx="322" cy="140" r="9" fill={C.amber} stroke={C.ink} strokeWidth="2.5" />
       <Sparkle x={330} y={110} size={7} />
       <Sparkle x={30} y={116} size={5} color={C.greenMid} />
@@ -107,7 +107,7 @@ export function PeopleIllustration({ className }: Props) {
       <path d="M104 138c0-22 13-36 30-36s30 14 30 36z" fill={C.amber} stroke={C.ink} strokeWidth="3" />
       <rect x="138" y="14" width="48" height="34" rx="8" fill="#fff" stroke={C.ink} strokeWidth="3" />
       <path d="M148 48l-6 10 14-10" fill="#fff" stroke={C.ink} strokeWidth="3" strokeLinejoin="round" />
-      <text x="162" y="36" textAnchor="middle" fontSize="13" fontWeight="800" fill={C.green} fontFamily="system-ui, sans-serif">₨</text>
+      <path d="M150 31h24M150 38h16" stroke={C.green} strokeWidth="3" strokeLinecap="round" />
       <Sparkle x={30} y={30} size={6} />
     </svg>
   )
