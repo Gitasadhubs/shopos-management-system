@@ -1,0 +1,3 @@
+User-agent: *
+Disallow: /api/
+# The app is not for search results (pages carry noindex); the public site is https://getshopos.online

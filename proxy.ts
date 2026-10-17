@@ -104,7 +104,7 @@ async function selfHostedProxy(request: NextRequest, response: NextResponse) {
   return response
 }
 
-export const config = { matcher: ['/((?!api|_next|sw\\.js|manifest\\.webmanifest|offline|icons(?:/|$)|workbox-[^/]*\\.js|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'] }
+export const config = { matcher: ['/((?!api|_next|sw\\.js|robots\\.txt|manifest\\.webmanifest|offline|icons(?:/|$)|workbox-[^/]*\\.js|favicon\\.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'] }
 
 export default proxy
 

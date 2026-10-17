@@ -3,9 +3,10 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'ShopOS — Smart shop management',
-  description: 'A fast, resilient lite ERP for local retail shops.',
-  generator: 'v0.app',
+  title: 'ShopOS — POS for small shops',
+  description: 'Point of sale, stock, customer credit and daily profit for small shops.',
+  // The app (sign-in, the shop itself) stays out of search results; getshopos.online is the public site.
+  robots: { index: false, follow: false },
   manifest: '/manifest.webmanifest',
   icons: {
     icon: [
