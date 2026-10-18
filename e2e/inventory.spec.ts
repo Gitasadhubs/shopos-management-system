@@ -33,7 +33,7 @@ test.describe('add product', () => {
     await expect(page.getByRole('status')).toHaveText('Product added.')
     await expect(row(page, name)).toContainText('Grocery')
     await expect(row(page, name)).toContainText(sku)
-    await expect(row(page, name)).toContainText('₨ 220.75')
+    await expect(row(page, name)).toContainText('Rs 220.75')
     expect(await getProduct(request, name)).toMatchObject({ sku, barcode, category: 'Grocery', unit: 'kg', cost_price: 180.5, sale_price: 220.75, stock_quantity: 25, reorder_level: 5 })
   })
 
@@ -132,7 +132,7 @@ test.describe('edit product', () => {
     await dialog.getByRole('button', { name: 'Save changes' }).click()
 
     await expect(page.getByRole('status')).toHaveText('Product updated.')
-    await expect(row(page, renamed)).toContainText('₨ 550')
+    await expect(row(page, renamed)).toContainText('Rs 550')
     expect(await getProduct(request, renamed)).toMatchObject({ id: product.id, sale_price: 550 })
   })
 

@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { useAuth } from '@/components/auth/auth-provider'
+import { getCountry } from '@/lib/countries'
 import { EmptyState, PeopleIllustration, TruckIllustration } from '@/components/illustrations'
 import { api, Avatar, dateTime, money, Notice, PageHeader, SkeletonRows, StatCard, useAction, useApi } from '@/components/page-kit'
 
@@ -35,12 +36,15 @@ const COPY = {
 
 const emptyForm = { name: '', phone: '', address: '', notes: '' }
 
-function whatsappLink(party: Party, shopName: string) {
+// The reminder is the shop's country template (lib/countries whatsapp.creditReminder).
+function whatsappLink(party: Party, shopName: string, countryCode: string | undefined) {
+  const country = getCountry(countryCode)
   const digits = (party.phone ?? '').replace(/\D/g, '')
-  if (digits.length < 10) return null
-  // Pakistani numbers are often saved as 03xx…; WhatsApp wants the country code.
-  const international = digits.startsWith('0') ? `92${digits.slice(1)}` : digits
-  const text = `Assalam-o-Alaikum ${party.name}, this is a friendly reminder from ${shopName}: your balance is ${money(party.balance)}. Thank you!`
+  if (digits.length < 8) return null
+  // Local numbers are often saved with a leading 0 (03xx…); WhatsApp wants the country code.
+  const prefix = country.phonePrefix.replace(/\D/g, '')
+  const international = digits.startsWith('0') && prefix ? `${prefix}${digits.slice(1)}` : digits
+  const text = country.whatsapp.creditReminder.replace('{customer}', party.name).replace('{shop}', shopName).replace('{balance}', money(party.balance).replace(/\u00a0/g, ' '))
   return `https://wa.me/${international}?text=${encodeURIComponent(text)}`
 }
 
@@ -128,7 +132,7 @@ function PartyPage({ kind }: { kind: Kind }) {
         <CardContent className="p-0">
           {list.loading && !list.data ? <SkeletonRows /> : parties.length ? <ul className="divide-y">
             {parties.map((party) => {
-              const reminder = kind === 'customers' && party.balance > 0 ? whatsappLink(party, shop?.name ?? 'our shop') : null
+              const reminder = kind === 'customers' && party.balance > 0 ? whatsappLink(party, shop?.name ?? 'our shop', shop?.country) : null
               return <li key={party.id} className="flex flex-col gap-3 p-4 transition-colors hover:bg-stone-50/60 sm:flex-row sm:items-center">
                 <div className="flex min-w-0 flex-1 items-center gap-3">
                   <Avatar name={party.name} />

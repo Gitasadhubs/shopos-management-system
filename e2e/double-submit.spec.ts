@@ -21,13 +21,13 @@ test('Complete sale: a double-click and F9 pressed twice each record one sale', 
   await searchPos(page, product.name)
   await page.getByRole('button', { name: new RegExp(`^${product.name}`) }).click()
   await page.getByRole('button', { name: /^Complete sale/ }).dblclick()
-  await expect(page.getByRole('status')).toHaveText('Sale completed · ₨ 100')
+  await expect(page.getByRole('status')).toHaveText('Sale completed · Rs 100')
   await expect.poll(async () => (await salesFor(request, product.name)).length).toBe(1)
 
   await page.getByRole('button', { name: new RegExp(`^${product.name}`) }).click()
   await page.keyboard.press('F9')
   await page.keyboard.press('F9')
-  await expect(page.getByRole('status')).toHaveText('Sale completed · ₨ 100')
+  await expect(page.getByRole('status')).toHaveText('Sale completed · Rs 100')
   await page.waitForTimeout(1_000)
   expect((await salesFor(request, product.name)).length).toBe(2)
   expect((await getProduct(request, product.name))?.stock_quantity).toBe(8)
@@ -43,7 +43,7 @@ test('Receive payment from a customer: a double-click records one payment', asyn
   await page.getByRole('button', { name: `Receive payment: ${customer.name}` }).click()
   await page.getByRole('dialog').getByLabel('Amount').fill('50')
   await page.getByRole('dialog').getByRole('button', { name: 'Record payment' }).dblclick()
-  await expect(page.getByRole('status')).toHaveText(`Payment of ₨ 50 recorded for ${customer.name}.`)
+  await expect(page.getByRole('status')).toHaveText(`Payment of Rs 50 recorded for ${customer.name}.`)
   await page.waitForTimeout(1_000)
 
   const detail = (await (await request.get(`/api/customers/${customer.id}`)).json()).data
@@ -61,7 +61,7 @@ test('Pay a supplier: a double-click records one payment', async ({ page, reques
   await page.getByRole('button', { name: `Pay supplier: ${supplier.name}` }).click()
   await page.getByRole('dialog').getByLabel('Amount').fill('100')
   await page.getByRole('dialog').getByRole('button', { name: 'Record payment' }).dblclick()
-  await expect(page.getByRole('status')).toHaveText(`Payment of ₨ 100 recorded for ${supplier.name}.`)
+  await expect(page.getByRole('status')).toHaveText(`Payment of Rs 100 recorded for ${supplier.name}.`)
   await page.waitForTimeout(1_000)
 
   const detail = (await (await request.get(`/api/suppliers/${supplier.id}`)).json()).data
@@ -80,7 +80,7 @@ test('Record a return: a double-click records one return', async ({ page, reques
   await dialog.getByRole('button', { name: 'Return items' }).click()
   await dialog.getByRole('button', { name: 'Return everything' }).click()
   await dialog.getByRole('button', { name: /^Record return/ }).dblclick()
-  await expect(dialog.getByRole('status')).toContainText(`Return saved on receipt #${sale.number}: ₨ 200.`)
+  await expect(dialog.getByRole('status')).toContainText(`Return saved on receipt #${sale.number}: Rs 200.`)
   await page.waitForTimeout(1_000)
 
   const detail = (await (await request.get(`/api/sales/${sale.id}`)).json()).data
@@ -99,7 +99,7 @@ test('Save a purchase: a double-click records one purchase and adds the stock on
   await dialog.getByLabel('Quantity 1').fill('3')
   await dialog.getByLabel('Unit cost 1').fill('50')
   await dialog.getByRole('button', { name: /^Save purchase/ }).dblclick()
-  await expect(page.getByRole('status')).toHaveText('Purchase saved · ₨ 150 · stock updated.')
+  await expect(page.getByRole('status')).toHaveText('Purchase saved · Rs 150 · stock updated.')
   await page.waitForTimeout(1_000)
 
   const purchases = (await (await request.get('/api/purchases')).json()).data as Array<{ items: Array<{ product_name: string }> }>
@@ -111,10 +111,10 @@ test('Add an expense: a double-click records one expense', async ({ page, reques
   const note = uniqueName('Double chai')
   await page.goto('/expenses')
   await page.getByRole('group', { name: 'Category' }).getByRole('button', { name: 'Electricity & gas' }).click()
-  await page.getByLabel('Amount (₨)').fill('333')
+  await page.getByLabel('Amount (Rs)').fill('333')
   await page.getByLabel('Note').fill(note)
   await page.getByRole('button', { name: 'Add expense' }).dblclick()
-  await expect(page.getByRole('status')).toHaveText('Electricity & gas expense of ₨ 333 saved.')
+  await expect(page.getByRole('status')).toHaveText('Electricity & gas expense of Rs 333 saved.')
   await page.waitForTimeout(1_000)
 
   const list = (await (await request.get('/api/expenses')).json()).data as { expenses: Array<{ note: string | null }> }

@@ -10,11 +10,13 @@ import { Label } from '@/components/ui/label'
 import { useAuth } from '@/components/auth/auth-provider'
 import { SettingsIllustration } from '@/components/illustrations'
 import { api, money, Notice, PageHeader, SkeletonRows, useAction, useApi } from '@/components/page-kit'
-import { pickerOptions } from '@/lib/countries'
+import { getCountry, LANGUAGE_NAMES, LANGUAGES, pickerOptions } from '@/lib/countries'
+import { currencySymbol } from '@/lib/format'
+import { t } from '@/lib/i18n'
 import { useCountryOptions } from '@/lib/countries/use-country-options'
 import { playSound, setSoundEnabled, useSoundEnabled, type SoundName } from '@/lib/sounds'
 
-type Shop = { id: string; name: string; phone: string | null; address: string | null; receipt_footer: string | null; timezone: string; country: string; daily_target: number | null; report_enabled: boolean; report_time: string; report_email: string | null; report_whatsapp: string | null }
+type Shop = { id: string; name: string; phone: string | null; address: string | null; receipt_footer: string | null; timezone: string; country: string; currency: string; language: string; daily_target: number | null; report_enabled: boolean; report_time: string; report_email: string | null; report_whatsapp: string | null }
 
 // Daily sales target (dashboard progress ring) and the automatic day-end report.
 function DayEndSettings({ shop, owner, onSaved }: { shop: Shop; owner: boolean; onSaved: () => Promise<void> }) {
@@ -36,7 +38,7 @@ function DayEndSettings({ shop, owner, onSaved }: { shop: Shop; owner: boolean; 
       <CardContent>
         <form onSubmit={save} className="grid gap-4 sm:grid-cols-2">
           <fieldset disabled={!owner || action.busy} className="contents">
-            <div className="sm:col-span-2"><Label htmlFor="daily-target">Daily sales target (₨)</Label><Input id="daily-target" className="mt-1.5" type="number" min="0" step="100" placeholder="e.g. 25000 — leave empty for none" value={form.daily_target} onChange={(event) => setForm({ ...form, daily_target: event.target.value })} /></div>
+            <div className="sm:col-span-2"><Label htmlFor="daily-target">Daily sales target ({currencySymbol()})</Label><Input id="daily-target" className="mt-1.5" type="number" min="0" step="100" placeholder="e.g. 25000 — leave empty for none" value={form.daily_target} onChange={(event) => setForm({ ...form, daily_target: event.target.value })} /></div>
             <label htmlFor="report-enabled" className="flex cursor-pointer items-center justify-between gap-4 rounded-xl border p-4 sm:col-span-2">
               <span><span className="block text-sm font-semibold">Send the day-end report automatically</span><span className="block text-xs text-muted-foreground">Once a day, at the time below (shop time zone).</span></span>
               <input id="report-enabled" type="checkbox" role="switch" className="peer sr-only" checked={form.report_enabled} onChange={(event) => setForm({ ...form, report_enabled: event.target.checked })} />
@@ -55,7 +57,14 @@ function DayEndSettings({ shop, owner, onSaved }: { shop: Shop; owner: boolean; 
   )
 }
 
-const ZONES = ['Asia/Karachi', 'Asia/Dubai', 'Asia/Riyadh', 'Asia/Kolkata', 'Asia/Dhaka', 'Europe/London', 'America/New_York', 'UTC']
+function currencyOptions(selected: string) {
+  const intl = Intl as unknown as { supportedValuesOf?: (key: string) => string[] }
+  const codes = new Set([selected, ...(intl.supportedValuesOf?.('currency') ?? [])])
+  const names = new Intl.DisplayNames(['en'], { type: 'currency' })
+  return [...codes].filter(Boolean).map((code) => ({ code, name: `${code} · ${names.of(code) ?? code}` })).sort((a, b) => a.code.localeCompare(b.code))
+}
+
+const ZONES = ['Asia/Karachi','Asia/Dubai', 'Asia/Riyadh', 'Asia/Kolkata', 'Asia/Dhaka', 'Europe/London', 'America/New_York', 'UTC']
 const SOUNDS: Array<{ name: SoundName; label: string }> = [{ name: 'add', label: 'Add to cart' }, { name: 'scan', label: 'Barcode scan' }, { name: 'sale', label: 'Sale complete' }, { name: 'success', label: 'Saved' }, { name: 'error', label: 'Problem' }]
 
 function Toggle({ id, checked, onChange, label }: { id: string; checked: boolean; onChange: (checked: boolean) => void; label: string }) {
@@ -74,11 +83,14 @@ export default function SettingsPage() {
   const shop = useApi<Shop>('/api/settings')
   const action = useAction()
   const sound = useSoundEnabled()
-  const [form, setForm] = useState({ name: '', phone: '', address: '', receipt_footer: '', timezone: 'Asia/Karachi', country: '' })
+  const [form, setForm] = useState({ name: '', phone: '', address: '', receipt_footer: '', timezone: 'Asia/Karachi', country: '', currency: 'PKR', language: 'en' })
   const countryList = useCountryOptions()
+  // Every currency the browser knows, named in English (the form only renders after the shop loads,
+  // so this never runs during server rendering).
+  const currencies = currencyOptions(form.currency)
 
   useEffect(() => {
-    if (shop.data) setForm({ name: shop.data.name, phone: shop.data.phone ?? '', address: shop.data.address ?? '', receipt_footer: shop.data.receipt_footer ?? '', timezone: shop.data.timezone, country: shop.data.country === 'ZZ' ? '' : shop.data.country })
+    if (shop.data) setForm({ name: shop.data.name, phone: shop.data.phone ?? '', address: shop.data.address ?? '', receipt_footer: shop.data.receipt_footer ?? '', timezone: shop.data.timezone, country: shop.data.country === 'ZZ' ? '' : shop.data.country, currency: shop.data.currency, language: shop.data.language })
   }, [shop.data])
 
   async function save(event: React.FormEvent) {
@@ -89,6 +101,8 @@ export default function SettingsPage() {
       await api('/api/settings', { method: 'PUT', body: country ? form : rest })
       return 'Shop details saved.'
     })
+    // A new language needs a fresh page: screens read their text when they render.
+    if (ok && form.language !== shop.data?.language) { window.location.reload(); return }
     if (ok) await refresh()
   }
 
@@ -109,8 +123,11 @@ export default function SettingsPage() {
               <fieldset disabled={!owner || action.busy} className="contents">
                 <div className="sm:col-span-2"><Label htmlFor="shop-name">Shop name</Label><Input id="shop-name" className="mt-1.5" required maxLength={120} value={form.name} onChange={set('name')} /></div>
                 <div><Label htmlFor="shop-phone">Phone</Label><Input id="shop-phone" className="mt-1.5" type="tel" maxLength={40} value={form.phone} onChange={set('phone')} /></div>
-                <div><Label htmlFor="shop-country">Country</Label><select id="shop-country" className="mt-1.5 h-10 w-full rounded-lg border border-input bg-white px-3 text-sm" value={form.country} onChange={set('country')}><option value="" disabled>Choose your country</option>{pickerOptions(countryList, form.country).map((option) => <option key={option.code} value={option.code}>{option.name}</option>)}</select></div>
+                <div><Label htmlFor="shop-country">Country</Label><select id="shop-country" className="mt-1.5 h-10 w-full rounded-lg border border-input bg-white px-3 text-sm" value={form.country} onChange={(event) => { const next = getCountry(event.target.value); setForm({ ...form, country: event.target.value, currency: next.code === 'ZZ' ? form.currency : next.currency, language: next.code === 'ZZ' ? form.language : next.language }) }}><option value="" disabled>{t('settings.chooseCountry')}</option>{pickerOptions(countryList, form.country).map((option) => <option key={option.code} value={option.code}>{option.name}</option>)}</select></div>
                 <div><Label htmlFor="shop-timezone">Time zone</Label><select id="shop-timezone" className="mt-1.5 h-10 w-full rounded-lg border border-input bg-white px-3 text-sm" value={form.timezone} onChange={set('timezone')}>{zones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}</select></div>
+                <div><Label htmlFor="shop-currency">{t('settings.currency')}</Label><select id="shop-currency" className="mt-1.5 h-10 w-full rounded-lg border border-input bg-white px-3 text-sm" value={form.currency} onChange={set('currency')}>{currencies.map((option) => <option key={option.code} value={option.code}>{option.name}</option>)}</select></div>
+                <div><Label htmlFor="shop-language">{t('settings.language')}</Label><select id="shop-language" className="mt-1.5 h-10 w-full rounded-lg border border-input bg-white px-3 text-sm" value={form.language} onChange={set('language')}>{LANGUAGES.map((code) => <option key={code} value={code}>{LANGUAGE_NAMES[code]}</option>)}</select></div>
+                <p className="text-xs text-muted-foreground sm:col-span-2">{t('settings.currencyHelp')} {t('settings.languageHelp')}</p>
                 <div className="sm:col-span-2"><Label htmlFor="shop-address">Address</Label><Input id="shop-address" className="mt-1.5" maxLength={300} value={form.address} onChange={set('address')} /></div>
                 <div className="sm:col-span-2"><Label htmlFor="shop-footer">Receipt message</Label><Input id="shop-footer" className="mt-1.5" maxLength={300} placeholder="Thank you for shopping with us!" value={form.receipt_footer} onChange={set('receipt_footer')} /></div>
                 {owner && <div className="sm:col-span-2"><Button type="submit" className="bg-emerald-600 hover:bg-emerald-700">{action.busy ? 'Saving…' : 'Save shop details'}</Button></div>}

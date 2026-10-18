@@ -1,5 +1,6 @@
 import type { NextRequest } from 'next/server'
 import { dayEndText, dayParam, getDayEnd, listDeliveries } from '@/lib/day-end'
+import { formatFor } from '@/lib/format'
 import { getShop } from '@/lib/local-platform'
 import { jsonResponse, withShop } from '@/lib/local-session'
 import { dayKey } from '@/lib/time'
@@ -19,7 +20,7 @@ export async function GET(request: NextRequest) {
     const report = await getDayEnd(shop.id, shop.timezone, parsed.data)
     return jsonResponse({
       report,
-      text: dayEndText(shop.name, report),
+      text: dayEndText(shop.name, report, formatFor(shop)),
       today,
       delivery: { enabled: shop.report_enabled, time: shop.report_time, email: shop.report_email, whatsapp: shop.report_whatsapp, whatsapp_api: whatsAppConfigured(), last_sent_on: shop.report_last_sent_on },
       deliveries: await listDeliveries(shop.id),

@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { EmptyBoxIllustration } from '@/components/illustrations'
 import { playSound } from '@/lib/sounds'
+import { formatMoney } from '@/lib/format'
 
 type Product = {
   id: string
@@ -39,7 +40,7 @@ type ProductForm = {
 }
 
 const emptyForm: ProductForm = { name: '', sku: '', barcode: '', category: '', unit: 'pcs', cost_price: '0', sale_price: '0', stock_quantity: '0', reorder_level: '0', image_url: '' }
-const money = (value: number) => `₨ ${value.toLocaleString('en-PK')}`
+const money = (value: number) => formatMoney(value)
 
 function ProductPhoto({ url, name, className }: { url: string | null; name: string; className: string }) {
   return url

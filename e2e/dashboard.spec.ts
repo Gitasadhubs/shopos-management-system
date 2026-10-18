@@ -20,14 +20,14 @@ test('stat cards, recent sales and low stock reflect a new sale', async ({ page,
   expect(after.lowStock).toBe(before.lowStock + 1)
 
   await page.goto('/dashboard')
-  const money = (value: number) => `₨ ${value.toLocaleString('en-PK', { maximumFractionDigits: 2 })}`
+  const money = (value: number) => `Rs ${value.toLocaleString('en-PK', { maximumFractionDigits: 2 })}`
   await expect(page.getByText('Sales today').locator('..')).toContainText(money(after.sales))
   await expect(page.getByText('Gross profit today').locator('..')).toContainText(money(after.profit))
   await expect(page.getByText('Transactions').locator('..')).toContainText(String(after.salesCount))
   await expect(page.getByText(`${after.salesCount} completed sale${after.salesCount === 1 ? '' : 's'}`)).toBeVisible()
 
   const row = page.getByRole('row', { name: new RegExp(`${product.name} × 3`) })
-  await expect(row).toContainText('₨ 350')
+  await expect(row).toContainText('Rs 350')
   await expect(row).toContainText('cash')
   await expect(page.getByText(product.name, { exact: true }).locator('..')).toContainText('1 left')
 })

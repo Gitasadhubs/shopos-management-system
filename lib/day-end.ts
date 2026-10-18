@@ -6,6 +6,7 @@ import { listExpenses } from '@/lib/local-expenses'
 import { getShop, type LocalShop } from '@/lib/local-platform'
 import { sendDayEndEmail } from '@/lib/mailer'
 import { addDays, dayKey, dayStart } from '@/lib/time'
+import { DEFAULT_FORMAT, formatDate, formatFor, formatMoney, type ShopFormat } from '@/lib/format'
 import { normalizePhone, parsePhoneList, sendWhatsAppTemplate, whatsAppConfigured } from '@/lib/whatsapp'
 
 // The day-end ("closing") report: what one shop sold, earned, spent and should have in the drawer
@@ -13,8 +14,6 @@ import { normalizePhone, parsePhoneList, sendWhatsAppTemplate, whatsAppConfigure
 
 // A shop-local calendar day in a query or body.
 export const dayParam = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00Z`)))
-
-const money = (value: number) => `₨ ${Number(value).toLocaleString('en-PK', { maximumFractionDigits: 2 })}`
 
 export async function getDayEnd(shopId: string, timezone: string, day: string) {
   const pool = await getPool()
@@ -103,16 +102,17 @@ export async function getDayEnd(shopId: string, timezone: string, day: string) {
 
 export type DayEnd = Awaited<ReturnType<typeof getDayEnd>>
 
-function longDate(day: string) {
-  return new Date(`${day}T12:00:00Z`).toLocaleDateString('en-PK', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
+function longDate(day: string, format: ShopFormat) {
+  return formatDate(`${day}T12:00:00Z`, format, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }, 'UTC')
 }
 
-// WhatsApp-friendly text: *bold*, emoji, one figure per line.
-export function dayEndText(shopName: string, report: DayEnd) {
+// WhatsApp-friendly text: *bold*, emoji, one figure per line, in the shop's currency (formatFor).
+export function dayEndText(shopName: string, report: DayEnd, format: ShopFormat = DEFAULT_FORMAT) {
+  const money = (value: number) => formatMoney(value, format).replace(/ /g, ' ')
   const change = report.vsYesterday === null ? '' : ` ${report.vsYesterday >= 0 ? '▲' : '▼'} ${Math.abs(report.vsYesterday)}% vs yesterday`
   const lines = [
     `*${shopName} — day-end report*`,
-    longDate(report.day),
+    longDate(report.day, format),
     '',
     `💰 Sales: ${money(report.sales.revenue)} (${report.sales.count} sale${report.sales.count === 1 ? '' : 's'})${change}`,
     `📈 Gross profit: ${money(report.grossProfit)}`,
@@ -150,7 +150,9 @@ async function logDelivery(shopId: string, day: string, delivery: Delivery) {
 // Sends one shop's report for one day to its email address and WhatsApp numbers.
 export async function sendDayEnd(shop: LocalShop, day: string) {
   const report = await getDayEnd(shop.id, shop.timezone, day)
-  const text = dayEndText(shop.name, report)
+  const format = formatFor(shop)
+  const money = (value: number) => formatMoney(value, format).replace(/ /g, ' ')
+  const text = dayEndText(shop.name, report, format)
   const deliveries: Delivery[] = []
 
   const email = shop.report_email || (await ownerEmail(shop.id))
@@ -161,7 +163,7 @@ export async function sendDayEnd(shop: LocalShop, day: string) {
         ['Cash', money(report.methods.cash)], ['Card', money(report.methods.card)], ['Khata (credit)', money(report.methods.credit)], ['Khata received', money(report.khata.received)], ['Returns', money(report.returns.total)], ['Cash expected in drawer', money(report.cash.expected)],
       ]
       const footer = report.topItems.length ? `Top items: ${report.topItems.map((item) => `${item.name} ×${item.quantity}`).join(', ')}` : 'No items sold.'
-      await sendDayEndEmail(email, `${shop.name} — day-end report for ${longDate(day)}`, text, rows, footer)
+      await sendDayEndEmail(email, `${shop.name} — day-end report for ${longDate(day, format)}`, text, rows, footer)
       deliveries.push({ channel: 'email', recipient: email, status: 'sent' })
     } catch (error) {
       deliveries.push({ channel: 'email', recipient: email, status: 'failed', error: error instanceof Error ? error.message : 'Email failed.' })
@@ -174,7 +176,7 @@ export async function sendDayEnd(shop: LocalShop, day: string) {
       continue
     }
     try {
-      await sendWhatsAppTemplate(number, [shop.name, longDate(day), money(report.sales.revenue), String(report.sales.count), money(report.grossProfit), money(report.expenses.total), money(report.netProfit), money(report.cash.expected)])
+      await sendWhatsAppTemplate(number, [shop.name, longDate(day, format), money(report.sales.revenue), String(report.sales.count), money(report.grossProfit), money(report.expenses.total), money(report.netProfit), money(report.cash.expected)])
       deliveries.push({ channel: 'whatsapp', recipient: normalizePhone(number) ?? number, status: 'sent' })
     } catch (error) {
       deliveries.push({ channel: 'whatsapp', recipient: number, status: 'failed', error: error instanceof Error ? error.message : 'WhatsApp failed.' })

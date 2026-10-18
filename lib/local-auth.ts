@@ -4,6 +4,7 @@ import { ER_DUP_ENTRY, getPool, isDbError, LocalDataError, withTransaction, type
 import { approvedAffiliateId } from '@/lib/affiliate-core'
 import { createShopWithTrial, SUBSCRIPTION_COLUMNS, subscriptionFromRow, type ShopSubscription } from '@/lib/local-platform'
 import { PLANS, type PlanId } from '@/lib/plans'
+import { getCountry } from '@/lib/countries'
 import { sendInviteEmail, sendPasswordResetEmail, sendVerificationEmail } from '@/lib/mailer'
 import { dummyPasswordHash, hashPassword, verifyPassword } from '@/lib/password'
 import type { Role } from '@/lib/permissions'
@@ -29,7 +30,9 @@ export type LocalUser = {
 
 // The shop a signed-in user works in, with what its subscription allows.
 // country: ISO code, the key to lib/countries (currency, language, tax, receipts).
-export type SessionShop = { id: string; name: string; timezone: string; country: string; subscription: ShopSubscription }
+// locale: for numbers and dates; receipt: invoice prefix and number padding. Both from the country
+// (lib/countries).
+export type SessionShop = { id: string; name: string; timezone: string; country: string; currency: string; locale: string; language: string; receipt: { prefix: string; padding: number }; subscription: ShopSubscription }
 export type SessionUser = LocalUser & { shop: SessionShop | null }
 
 export type PendingInvite = { id: string; email: string; full_name: string | null; role: Role; created_at: string; expires_at: string }
@@ -119,7 +122,7 @@ export async function getSessionUser(token: string | undefined): Promise<Session
   const pool = await getPool()
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT ${USER_COLUMNS.split(', ').map((column) => `users.${column}`).join(', ')}, sessions.last_seen_at AS session_seen_at,
-       shops.name AS shop_name, shops.timezone AS shop_timezone, shops.country AS shop_country, ${SUBSCRIPTION_COLUMNS}
+       shops.name AS shop_name, shops.timezone AS shop_timezone, shops.country AS shop_country, shops.currency AS shop_currency, shops.language AS shop_language, ${SUBSCRIPTION_COLUMNS}
      FROM sessions JOIN users ON users.id = sessions.user_id
      LEFT JOIN shops ON shops.id = users.shop_id
      LEFT JOIN subscriptions ON subscriptions.shop_id = users.shop_id
@@ -133,7 +136,7 @@ export async function getSessionUser(token: string | undefined): Promise<Session
     await pool.query('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?', [new Date(), sha256(token)])
   }
   const shop = row.shop_id && row.sub_status
-    ? { id: row.shop_id as string, name: row.shop_name as string, timezone: (row.shop_timezone as string) || DEFAULT_TIMEZONE, country: (row.shop_country as string) || 'ZZ', subscription: subscriptionFromRow(row) }
+    ? { id: row.shop_id as string, name: row.shop_name as string, timezone: (row.shop_timezone as string) || DEFAULT_TIMEZONE, country: (row.shop_country as string) || 'ZZ', currency: (row.shop_currency as string) || 'PKR', locale: getCountry(row.shop_country).locale, language: (row.shop_language as string) || 'en', receipt: { prefix: getCountry(row.shop_country).receipt.invoicePrefix, padding: getCountry(row.shop_country).receipt.numberPadding }, subscription: subscriptionFromRow(row) }
     : null
   return { ...userFromRow(row), shop }
 }

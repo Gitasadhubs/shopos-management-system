@@ -14,6 +14,8 @@ import { Confetti } from '@/components/confetti'
 import { Receipt, receiptLabel, ReturnBadge, type ReceiptSale, type ShopProfile } from '@/components/receipt'
 import { playSound, setSoundEnabled, useSoundEnabled } from '@/lib/sounds'
 import { randomId } from '@/lib/utils'
+import { formatDateTime, formatFor, formatMoney, setShopFormat } from '@/lib/format'
+import { applyLanguage, t } from '@/lib/i18n'
 import { discardQueued, isNetworkError, lastCatalog, listQueue, loadCatalog, queueSale, saveCatalog, syncQueue, type QueuedSale } from '@/lib/offline/till'
 
 type Product = {
@@ -31,9 +33,17 @@ type CartItem = { product: Product; quantity: number }
 type Sale = ReceiptSale
 type Customer = { id: string; name: string; phone: string | null; balance: number }
 type Method = 'cash' | 'card' | 'credit'
+type TillProfile = ShopProfile & { country?: string; currency?: string; language?: string }
 
-const money = (value: number) => `₨ ${value.toLocaleString('en-PK', { maximumFractionDigits: 2 })}`
-const paymentMethods = { cash: 'Cash', card: 'Card', credit: 'Credit (khata)' }
+// The till does not use the auth provider (it must open offline), so it applies the shop's currency
+// and language itself, from Settings or the copy saved on the device.
+function applyShop(shop: TillProfile | null) {
+  if (!shop?.currency) return
+  setShopFormat(formatFor(shop))
+  applyLanguage(shop.language)
+}
+
+const money = (value: number) => formatMoney(value)
 const round = (value: number) => Math.round(value * 100) / 100
 
 function initials(name: string) {
@@ -44,7 +54,7 @@ export default function POSPage() {
   const [products, setProducts] = useState<Product[]>([])
   const [sales, setSales] = useState<Sale[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
-  const [shop, setShop] = useState<ShopProfile | null>(null)
+  const [shop, setShop] = useState<TillProfile | null>(null)
   const [cart, setCart] = useState<CartItem[]>([])
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('')
@@ -84,6 +94,7 @@ export default function POSPage() {
     setShopId(catalog.shop_id)
     setProducts(catalog.products.filter((product) => !query || [product.name, product.sku, product.barcode].some((value) => value?.toLowerCase().includes(query))))
     setCustomers(catalog.customers)
+    if (!shop) applyShop(catalog.shop)
     setShop((current) => current ?? catalog.shop)
     setError('')
     return true
@@ -97,7 +108,7 @@ export default function POSPage() {
     fetch(`/api/products?search=${encodeURIComponent(search)}`, { cache: 'no-store' })
       .then(async (response) => {
         const body = await response.json()
-        if (!response.ok) throw new Error(body.error ?? 'Could not load products.')
+        if (!response.ok) throw new Error(body.error ?? t('pos.errProducts'))
         if (!active) return
         // Offline, an answer can still come from the service worker's cache; the device copy is newer
         // (it already counts the sales waiting on this till), so it wins.
@@ -109,7 +120,7 @@ export default function POSPage() {
       .catch(async (loadError) => {
         if (!active) return
         if (isNetworkError(loadError) && await fillRef.current()) return
-        setError(isNetworkError(loadError) ? 'No connection, and this till has no saved copy of the products yet. Open the POS once while online.' : loadError instanceof Error ? loadError.message : 'Could not load products.')
+        setError(isNetworkError(loadError) ? t('pos.noCatalog') : loadError instanceof Error ? loadError.message : t('pos.errProducts'))
       })
       .finally(() => { if (active) setLoadingProducts(false) })
     return () => { active = false }
@@ -121,10 +132,10 @@ export default function POSPage() {
     fetch('/api/sales', { cache: 'no-store' })
       .then(async (response) => {
         const body = await response.json()
-        if (!response.ok) throw new Error(body.error ?? 'Could not load sales history.')
+        if (!response.ok) throw new Error(body.error ?? t('pos.errSales'))
         if (active) setSales(body.data ?? [])
       })
-      .catch((loadError) => { if (active && !isNetworkError(loadError)) setError(loadError instanceof Error ? loadError.message : 'Could not load sales history.') })
+      .catch((loadError) => { if (active && !isNetworkError(loadError)) setError(loadError instanceof Error ? loadError.message : t('pos.errSales')) })
       .finally(() => { if (active) setLoadingSales(false) })
     return () => { active = false }
   }, [refreshKey])
@@ -137,6 +148,7 @@ export default function POSPage() {
       if (!response.ok || !active) return
       const data = (await response.json()).data
       fresh.current.shop = navigator.onLine
+      applyShop(data)
       setShop(data)
       if (data?.id) setShopId(data.id)
     }).catch(() => undefined)
@@ -146,7 +158,7 @@ export default function POSPage() {
   // Keep the device copy fresh while online (the full list only, never a search result).
   useEffect(() => { if (shopId && fresh.current.products) void saveCatalog(shopId, { products }).catch(() => undefined) }, [shopId, products])
   useEffect(() => { if (shopId && fresh.current.customers) void saveCatalog(shopId, { customers }).catch(() => undefined) }, [shopId, customers])
-  useEffect(() => { if (shopId && shop && fresh.current.shop) void saveCatalog(shopId, { shop: { id: shopId, name: shop.name, phone: shop.phone, address: shop.address, receipt_footer: shop.receipt_footer } }).catch(() => undefined) }, [shopId, shop])
+  useEffect(() => { if (shopId && shop && fresh.current.shop) void saveCatalog(shopId, { shop: { id: shopId, name: shop.name, phone: shop.phone, address: shop.address, receipt_footer: shop.receipt_footer, country: shop.country, currency: shop.currency, language: shop.language } }).catch(() => undefined) }, [shopId, shop])
 
   // Send waiting sales: now, when the browser says it is back online, and every 20 seconds.
   async function syncNow() {
@@ -238,17 +250,17 @@ export default function POSPage() {
   async function checkout() {
     if (!cart.length || checkoutLoading) return
     if (discountValue > subtotal) {
-      setError('Discount cannot exceed the subtotal.')
+      setError(t('pos.errDiscount'))
       playSound('error')
       return
     }
     if (paymentMethod === 'credit' && !customerId) {
-      setError('Choose a customer for a credit (khata) sale.')
+      setError(t('pos.errCustomer'))
       playSound('error')
       return
     }
     if (paymentMethod === 'cash' && receivedValue !== null && receivedValue < total) {
-      setError('Cash received is less than the total.')
+      setError(t('pos.errCash'))
       playSound('error')
       return
     }
@@ -270,8 +282,8 @@ export default function POSPage() {
         body: JSON.stringify(sale),
       })
       const body = await response.json()
-      if (!response.ok) throw new Error(body.error ?? 'Sale could not be completed.')
-      setSuccess(`Sale completed · ${money(Number(body.data.total))}`)
+      if (!response.ok) throw new Error(body.error ?? t('pos.errFailed'))
+      setSuccess(t('pos.completed', { total: money(Number(body.data.total)) }))
       setLastSale(body.data)
       playSound('sale')
       setBurst((value) => value + 1)
@@ -285,7 +297,7 @@ export default function POSPage() {
           const sold = new Map(cart.map(({ product, quantity }) => [product.id, quantity]))
           setProducts((items) => items.map((product) => (sold.has(product.id) ? { ...product, stock_quantity: Math.max(0, product.stock_quantity - sold.get(product.id)!) } : product)))
           setOffline(true)
-          setSuccess(`Saved on this till · ${money(total)}. It will be sent as soon as the connection is back.`)
+          setSuccess(t('pos.savedOfflineNote', { total: money(total) }))
           setLastSale(null)
           playSound('sale')
           setBurst((value) => value + 1)
@@ -296,7 +308,7 @@ export default function POSPage() {
           return
         } catch { /* the device could not store it either: show the error below */ }
       }
-      setError(checkoutError instanceof Error ? checkoutError.message : 'Sale could not be completed.')
+      setError(checkoutError instanceof Error ? checkoutError.message : t('pos.errFailed'))
       playSound('error')
       // Stock may have changed on another till; show current levels.
       setRefreshKey((value) => value + 1)
@@ -329,11 +341,11 @@ export default function POSPage() {
     <main className="min-h-screen bg-stone-50 p-4 sm:p-8">
       <div className="mx-auto max-w-7xl">
         <div className="no-print mb-6 flex flex-wrap items-center justify-between gap-4 shopos-rise">
-          <div><Link href="/dashboard" className="mb-3 inline-flex items-center gap-2 text-sm font-medium text-emerald-700"><ArrowLeft className="size-4" />Dashboard</Link><h1 className="text-3xl font-bold text-stone-900">Point of Sale</h1><p className="mt-1 text-sm text-muted-foreground">{shop?.name ? `${shop.name} · ` : ''}{offline ? 'Offline: sales are kept on this till and sent when the connection is back.' : 'Products and sales are saved by the server.'}</p></div>
+          <div><Link href="/dashboard" className="mb-3 inline-flex items-center gap-2 text-sm font-medium text-emerald-700"><ArrowLeft className="size-4" />{t('pos.back')}</Link><h1 className="text-3xl font-bold text-stone-900">{t('pos.title')}</h1><p className="mt-1 text-sm text-muted-foreground">{shop?.name ? `${shop.name} · ` : ''}{t(offline ? 'pos.offline' : 'pos.online')}</p></div>
           <div className="flex items-center gap-2">
-            {(offline || waiting > 0) && <span role="status" className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${offline ? 'bg-amber-100 text-amber-900' : 'bg-sky-100 text-sky-900'}`}>{offline ? <CloudOff className="size-3.5" /> : <RefreshCw className={`size-3.5 ${syncing ? 'animate-spin' : ''}`} />}{offline ? 'Offline' : 'Sending'}{waiting > 0 ? ` · ${waiting} waiting` : ''}</span>}
-            <Badge variant="outline" className="bg-white">{products.length} product{products.length === 1 ? '' : 's'}</Badge>
-            <button type="button" aria-label={sound ? 'Mute sounds' : 'Turn sounds on'} title={sound ? 'Mute sounds' : 'Turn sounds on'} onClick={() => setSoundEnabled(!sound)} className="flex size-10 items-center justify-center rounded-lg bg-white text-stone-500 ring-1 ring-stone-200 hover:text-stone-900">{sound ? <Volume2 className="size-5" /> : <VolumeX className="size-5" />}</button>
+            {(offline || waiting > 0) && <span role="status" className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${offline ? 'bg-amber-100 text-amber-900' : 'bg-sky-100 text-sky-900'}`}>{offline ? <CloudOff className="size-3.5" /> : <RefreshCw className={`size-3.5 ${syncing ? 'animate-spin' : ''}`} />}{t(offline ? 'pos.offlineBadge' : 'pos.sending')}{waiting > 0 ? ` · ${t('pos.waiting', { count: waiting })}` : ''}</span>}
+            <Badge variant="outline" className="bg-white">{products.length === 1 ? t('pos.oneProduct') : t('pos.products', { count: products.length })}</Badge>
+            <button type="button" aria-label={t(sound ? 'pos.muteSounds' : 'pos.soundsOn')} title={t(sound ? 'pos.muteSounds' : 'pos.soundsOn')} onClick={() => setSoundEnabled(!sound)} className="flex size-10 items-center justify-center rounded-lg bg-white text-stone-500 ring-1 ring-stone-200 hover:text-stone-900">{sound ? <Volume2 className="size-5" /> : <VolumeX className="size-5" />}</button>
           </div>
         </div>
 
@@ -342,10 +354,10 @@ export default function POSPage() {
 
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
           <section className="no-print">
-            <div className="relative mb-3"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={scan} placeholder="Search products, SKU, or barcode" className="bg-white pl-9 pr-10" /><ScanBarcode aria-hidden="true" className="absolute right-3 top-3 size-4 text-muted-foreground" /></div>
-            <p className="mb-3 hidden flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground lg:flex"><span><kbd>F2</kbd> search</span><span><kbd>F9</kbd> finish the sale</span><span><kbd>Esc</kbd> clear search</span><span>Scan a barcode and press <kbd>Enter</kbd> to add it</span></p>
-            {categories.length > 1 && <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label="Filter by category">
-              {['', ...categories].map((item) => <button key={item || 'all'} type="button" aria-pressed={category === item} onClick={() => { playSound('tap'); setCategory(item) }} className={`rounded-full px-4 text-sm font-medium transition ${category === item ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-stone-600 ring-1 ring-stone-200 hover:bg-stone-100'}`}>{item || 'All'}</button>)}
+            <div className="relative mb-3"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={scan} placeholder={t('pos.search')} className="bg-white pl-9 pr-10" /><ScanBarcode aria-hidden="true" className="absolute right-3 top-3 size-4 text-muted-foreground" /></div>
+            <p className="mb-3 hidden flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground lg:flex"><span><kbd>F2</kbd> {t('pos.keySearch')}</span><span><kbd>F9</kbd> {t('pos.keyFinish')}</span><span><kbd>Esc</kbd> {t('pos.keyClear')}</span><span>{t('pos.keyScan')}</span></p>
+            {categories.length > 1 && <div className="mb-4 flex flex-wrap gap-2" role="group" aria-label={t('pos.filterCategory')}>
+              {['', ...categories].map((item) => <button key={item || 'all'} type="button" aria-pressed={category === item} onClick={() => { playSound('tap'); setCategory(item) }} className={`rounded-full px-4 text-sm font-medium transition ${category === item ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-stone-600 ring-1 ring-stone-200 hover:bg-stone-100'}`}>{item || t('pos.all')}</button>)}
             </div>}
             {loadingProducts ? <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">{Array.from({ length: 8 }, (_, index) => <div key={index} className="h-36 rounded-xl shopos-shimmer" />)}</div> : visible.length ? <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
               {visible.map((product) => {
@@ -354,7 +366,7 @@ export default function POSPage() {
                 return <button key={product.id} type="button" disabled={product.stock_quantity <= 0} onClick={() => changeQuantity(product, 1)} className={`group relative overflow-hidden rounded-xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-emerald-400 hover:shadow-md active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:translate-y-0 ${quantity ? 'border-emerald-300 ring-2 ring-emerald-100' : ''} ${bumped === product.id ? 'shopos-pop' : ''}`}>
                   <div className="flex min-h-12 items-start justify-between gap-2"><span className="font-semibold text-stone-900">{product.name}</span>{quantity > 0 && <Badge className="shopos-pop">{quantity}</Badge>}</div>
                   <div className="mt-3 flex items-end justify-between gap-2">
-                    <div><p className="text-sm font-bold text-emerald-700">{money(Number(product.sale_price))}</p><p className={`mt-1 text-xs ${low ? 'font-semibold text-amber-700' : 'text-muted-foreground'}`}>Stock {product.stock_quantity}</p></div>
+                    <div><p className="text-sm font-bold text-emerald-700">{money(Number(product.sale_price))}</p><p className={`mt-1 text-xs ${low ? 'font-semibold text-amber-700' : 'text-muted-foreground'}`}>{t('pos.stock', { count: product.stock_quantity })}</p></div>
                     {product.image_url
                       ? <img src={product.image_url} alt="" className="size-12 rounded-xl border object-cover transition-transform group-hover:scale-110" />
                       : <span aria-hidden="true" className={`flex size-10 items-center justify-center rounded-xl text-sm font-bold transition-transform group-hover:scale-110 ${colorFor(product.category || product.name)}`}>{initials(product.name)}</span>}
@@ -362,32 +374,32 @@ export default function POSPage() {
                   {product.category && <span aria-hidden="true" className="absolute right-2 top-2 hidden rounded-full bg-stone-100 px-2 text-[10px] text-stone-500 group-hover:block">{product.category}</span>}
                 </button>
               })}
-            </div> : <div className="rounded-xl border border-dashed bg-white"><div className="flex flex-col items-center p-8 text-center"><EmptyBoxIllustration className="h-28 w-auto" /><p className="mt-3 text-sm text-muted-foreground">No products found. Add products in Inventory.</p></div></div>}
+            </div> : <div className="rounded-xl border border-dashed bg-white"><div className="flex flex-col items-center p-8 text-center"><EmptyBoxIllustration className="h-28 w-auto" /><p className="mt-3 text-sm text-muted-foreground">{t('pos.noProducts')}</p></div></div>}
           </section>
 
           <div className="lg:sticky lg:top-6">
             <Card className="no-print shadow-md">
-              <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">Current sale</CardTitle>{cart.length > 0 && <span className="text-xs text-muted-foreground">{cart.reduce((sum, item) => sum + item.quantity, 0)} items</span>}</CardHeader>
+              <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">{t('pos.currentSale')}</CardTitle>{cart.length > 0 && <span className="text-xs text-muted-foreground">{t('pos.items', { count: cart.reduce((sum, item) => sum + item.quantity, 0) })}</span>}</CardHeader>
               <CardContent>
                 {cart.length ? <div className="max-h-[320px] space-y-3 overflow-y-auto">{cart.map(({ product, quantity }) => <div key={product.id} className="flex items-center gap-2 border-b pb-3 shopos-rise">
-                  <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{product.name}</p><p className="text-xs text-muted-foreground">{money(Number(product.sale_price))} each</p></div>
+                  <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{product.name}</p><p className="text-xs text-muted-foreground">{t('pos.each', { price: money(Number(product.sale_price)) })}</p></div>
                   <div className="flex items-center gap-1"><Button variant="outline" size="icon" aria-label={`Remove one ${product.name}`} onClick={() => changeQuantity(product, -1)}><Minus className="size-3" /></Button><span className="w-6 text-center text-sm tabular-nums">{quantity}</span><Button variant="outline" size="icon" aria-label={`Add one ${product.name}`} disabled={quantity >= product.stock_quantity} onClick={() => changeQuantity(product, 1)}><Plus className="size-3" /></Button></div>
                   <span className="w-20 text-right text-sm font-semibold">{money(Number(product.sale_price) * quantity)}</span>
-                </div>)}</div> : <div className="flex flex-col items-center border-b pb-6 pt-2 text-center"><EmptyCartIllustration className="h-24 w-auto opacity-90" /><p className="mt-2 text-sm text-muted-foreground">Select products to begin.</p></div>}
+                </div>)}</div> : <div className="flex flex-col items-center border-b pb-6 pt-2 text-center"><EmptyCartIllustration className="h-24 w-auto opacity-90" /><p className="mt-2 text-sm text-muted-foreground">{t('pos.empty')}</p></div>}
 
                 <div className="mt-4 grid gap-3">
-                  <div className="flex justify-between text-sm"><span className="text-muted-foreground">Subtotal</span><span>{money(subtotal)}</span></div>
-                  <div className="flex items-center justify-between gap-3"><label htmlFor="sale-discount" className="text-sm text-muted-foreground">Discount</label><Input id="sale-discount" type="number" min="0" max={subtotal} step="0.01" value={discount} onChange={(event) => setDiscount(event.target.value)} className="w-32 text-right" /></div>
-                  <div className="flex justify-between border-t pt-3 text-lg font-bold"><span>Total</span><span className="text-emerald-700 tabular-nums">{money(total)}</span></div>
-                  <Select items={paymentMethods} value={paymentMethod} onValueChange={(value) => { if (value === 'cash' || value === 'card' || value === 'credit') { setPaymentMethod(value); setReceived(''); playSound('tap') } }}>
-                    <SelectTrigger aria-label="Payment method"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">Cash</SelectItem><SelectItem value="card">Card</SelectItem>{customers.length > 0 && <SelectItem value="credit">Credit (khata)</SelectItem>}</SelectContent>
+                  <div className="flex justify-between text-sm"><span className="text-muted-foreground">{t('pos.subtotal')}</span><span>{money(subtotal)}</span></div>
+                  <div className="flex items-center justify-between gap-3"><label htmlFor="sale-discount" className="text-sm text-muted-foreground">{t('pos.discount')}</label><Input id="sale-discount" type="number" min="0" max={subtotal} step="0.01" value={discount} onChange={(event) => setDiscount(event.target.value)} className="w-32 text-right" /></div>
+                  <div className="flex justify-between border-t pt-3 text-lg font-bold"><span>{t('pos.total')}</span><span className="text-emerald-700 tabular-nums">{money(total)}</span></div>
+                  <Select items={{ cash: t('pos.cash'), card: t('pos.card'), credit: t('pos.credit') }} value={paymentMethod} onValueChange={(value) => { if (value === 'cash' || value === 'card' || value === 'credit') { setPaymentMethod(value); setReceived(''); playSound('tap') } }}>
+                    <SelectTrigger aria-label={t('pos.paymentMethod')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">{t('pos.cash')}</SelectItem><SelectItem value="card">{t('pos.card')}</SelectItem>{customers.length > 0 && <SelectItem value="credit">{t('pos.credit')}</SelectItem>}</SelectContent>
                   </Select>
-                  {customers.length > 0 && <div className="grid gap-1.5"><label htmlFor="sale-customer" className="text-sm text-muted-foreground">Customer</label><select id="sale-customer" value={customerId} onChange={(event) => setCustomerId(event.target.value)} className="h-10 rounded-lg border border-input bg-white px-3 text-sm"><option value="">{paymentMethod === 'credit' ? 'Choose a customer…' : 'Walk-in customer'}</option>{customers.map((item) => <option key={item.id} value={item.id}>{item.name}{item.balance > 0 ? ` (owes ${money(item.balance)})` : ''}</option>)}</select></div>}
-                  {paymentMethod !== 'card' && cart.length > 0 && <div className="flex items-center justify-between gap-3"><label htmlFor="sale-received" className="text-sm text-muted-foreground">{paymentMethod === 'credit' ? 'Paid now' : 'Cash received'}</label><Input id="sale-received" type="number" min="0" step="0.01" placeholder={paymentMethod === 'credit' ? '0' : String(total)} value={received} onChange={(event) => setReceived(event.target.value)} className="w-32 text-right" /></div>}
-                  {change !== null && change >= 0 && <div className="flex justify-between rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 shopos-pop"><span>Change to give</span><span className="tabular-nums">{money(change)}</span></div>}
-                  {paymentMethod === 'credit' && customer && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">{money(Math.max(0, round(total - (receivedValue ?? 0))))} goes on {customer.name}&apos;s khata.</p>}
-                  <Button disabled={!cart.length || checkoutLoading} onClick={() => void checkout()} className="h-12 w-full bg-emerald-600 text-base hover:bg-emerald-700">{checkoutLoading ? <><LoaderCircle className="mr-2 size-4 animate-spin" />Completing…</> : `Complete sale · ${money(total)}`}</Button>
-                  <Button variant="outline" disabled={!cart.length || checkoutLoading} onClick={() => { resetSale(); playSound('remove') }}>Clear sale</Button>
+                  {customers.length > 0 && <div className="grid gap-1.5"><label htmlFor="sale-customer" className="text-sm text-muted-foreground">{t('pos.customer')}</label><select id="sale-customer" value={customerId} onChange={(event) => setCustomerId(event.target.value)} className="h-10 rounded-lg border border-input bg-white px-3 text-sm"><option value="">{t(paymentMethod === 'credit' ? 'pos.chooseCustomer' : 'pos.walkIn')}</option>{customers.map((item) => <option key={item.id} value={item.id}>{item.name}{item.balance > 0 ? ` (${t('pos.owes', { amount: money(item.balance) })})` : ''}</option>)}</select></div>}
+                  {paymentMethod !== 'card' && cart.length > 0 && <div className="flex items-center justify-between gap-3"><label htmlFor="sale-received" className="text-sm text-muted-foreground">{t(paymentMethod === 'credit' ? 'pos.paidNow' : 'pos.cashReceived')}</label><Input id="sale-received" type="number" min="0" step="0.01" placeholder={paymentMethod === 'credit' ? '0' : String(total)} value={received} onChange={(event) => setReceived(event.target.value)} className="w-32 text-right" /></div>}
+                  {change !== null && change >= 0 && <div className="flex justify-between rounded-lg bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 shopos-pop"><span>{t('pos.change')}</span><span className="tabular-nums">{money(change)}</span></div>}
+                  {paymentMethod === 'credit' && customer && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">{t('pos.onAccount', { amount: money(Math.max(0, round(total - (receivedValue ?? 0)))), name: customer.name })}</p>}
+                  <Button disabled={!cart.length || checkoutLoading} onClick={() => void checkout()} className="h-12 w-full bg-emerald-600 text-base hover:bg-emerald-700">{checkoutLoading ? <><LoaderCircle className="mr-2 size-4 animate-spin" />{t('pos.completing')}</> : t('pos.complete', { total: money(total) })}</Button>
+                  <Button variant="outline" disabled={!cart.length || checkoutLoading} onClick={() => { resetSale(); playSound('remove') }}>{t('pos.clear')}</Button>
                 </div>
               </CardContent>
             </Card>
@@ -396,17 +408,17 @@ export default function POSPage() {
         </div>
 
         {queue.length > 0 && <Card className="no-print mt-8 border-amber-200">
-          <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">Waiting to be sent ({queue.length})</CardTitle><Button variant="outline" size="sm" disabled={syncing} onClick={() => void syncNow()}><RefreshCw className={`mr-2 size-4 ${syncing ? 'animate-spin' : ''}`} />Send now</Button></CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">{t('pos.queue', { count: queue.length })}</CardTitle><Button variant="outline" size="sm" disabled={syncing} onClick={() => void syncNow()}><RefreshCw className={`mr-2 size-4 ${syncing ? 'animate-spin' : ''}`} />{t('pos.sendNow')}</Button></CardHeader>
           <CardContent><div className="divide-y">
-            {queue.map((sale) => <div key={sale.client_id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-semibold">{sale.status === 'failed' ? 'Not accepted by the server' : 'Saved on this till'}</p><p className="text-xs text-muted-foreground">{new Date(sale.sold_at).toLocaleString()} · {sale.summary.items.map((item) => `${item.name} × ${item.quantity}`).join(', ')}{sale.summary.customer_name ? ` · ${sale.summary.customer_name}` : ''}</p>{sale.error && <p className="mt-1 text-xs text-rose-700">{sale.error}</p>}</div><div className="flex items-center gap-3">{sale.status === 'failed' && <Button variant="outline" size="sm" onClick={async () => { await discardQueued(sale.client_id); if (shopId) setQueue(await listQueue(shopId)) }}>Discard</Button>}<Badge variant="secondary" className="capitalize">{sale.body.payment_method}</Badge><span className="text-sm font-bold">{money(sale.summary.total)}</span></div></div>)}
+            {queue.map((sale) => <div key={sale.client_id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-semibold">{t(sale.status === 'failed' ? 'pos.rejected' : 'pos.savedOffline')}</p><p className="text-xs text-muted-foreground">{formatDateTime(sale.sold_at)} · {sale.summary.items.map((item) => `${item.name} × ${item.quantity}`).join(', ')}{sale.summary.customer_name ? ` · ${sale.summary.customer_name}` : ''}</p>{sale.error && <p className="mt-1 text-xs text-rose-700">{sale.error}</p>}</div><div className="flex items-center gap-3">{sale.status === 'failed' && <Button variant="outline" size="sm" onClick={async () => { await discardQueued(sale.client_id); if (shopId) setQueue(await listQueue(shopId)) }}>{t('pos.discard')}</Button>}<Badge variant="secondary" className="capitalize">{sale.body.payment_method}</Badge><span className="text-sm font-bold">{money(sale.summary.total)}</span></div></div>)}
           </div></CardContent>
         </Card>}
 
         <Card className="no-print mt-8">
-          <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">Recent sales</CardTitle>{shop && <Link href="/sales" className="text-sm font-medium text-emerald-700">All sales and returns <ArrowUpRight className="ml-1 inline size-4" /></Link>}</CardHeader>
-          <CardContent>{loadingSales ? <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Loading sales…</div> : sales.length ? <div className="divide-y">
-            {sales.map((sale) => <div key={sale.id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-semibold">Receipt {receiptLabel(sale)}<ReturnBadge sale={sale} /></p><p className="text-xs text-muted-foreground">{new Date(sale.created_at).toLocaleString()} · {sale.items.map((item) => `${item.product_name} × ${item.quantity}`).join(', ')}{sale.customer_name ? ` · ${sale.customer_name}` : ''}</p></div><div className="flex items-center gap-3"><Badge variant="secondary" className={`capitalize ${sale.payment_method === 'credit' ? 'bg-amber-100 text-amber-800' : sale.payment_method === 'card' ? 'bg-sky-100 text-sky-800' : 'bg-emerald-100 text-emerald-800'}`}>{sale.payment_method}</Badge><span className="text-sm font-bold">{money(Number(sale.total))}</span></div></div>)}
-          </div> : <p className="p-6 text-center text-sm text-muted-foreground">No completed sales yet.</p>}</CardContent>
+          <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">{t('pos.recent')}</CardTitle>{shop && <Link href="/sales" className="text-sm font-medium text-emerald-700">{t('pos.allSales')} <ArrowUpRight className="ml-1 inline size-4" /></Link>}</CardHeader>
+          <CardContent>{loadingSales ? <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />{t('pos.loadingSales')}</div> : sales.length ? <div className="divide-y">
+            {sales.map((sale) => <div key={sale.id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-semibold">{t('pos.receipt', { number: receiptLabel(sale) })}<ReturnBadge sale={sale} /></p><p className="text-xs text-muted-foreground">{formatDateTime(sale.created_at)} · {sale.items.map((item) => `${item.product_name} × ${item.quantity}`).join(', ')}{sale.customer_name ? ` · ${sale.customer_name}` : ''}</p></div><div className="flex items-center gap-3"><Badge variant="secondary" className={`capitalize ${sale.payment_method === 'credit' ? 'bg-amber-100 text-amber-800' : sale.payment_method === 'card' ? 'bg-sky-100 text-sky-800' : 'bg-emerald-100 text-emerald-800'}`}>{sale.payment_method}</Badge><span className="text-sm font-bold">{money(Number(sale.total))}</span></div></div>)}
+          </div> : <p className="p-6 text-center text-sm text-muted-foreground">{t('pos.noSales')}</p>}</CardContent>
         </Card>
       </div>
       <Confetti burst={burst} />

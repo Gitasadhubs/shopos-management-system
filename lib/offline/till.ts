@@ -9,7 +9,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 
 export type TillProduct = { id: string; name: string; sku: string | null; barcode: string | null; category: string | null; sale_price: number; stock_quantity: number; image_url?: string | null }
 export type TillCustomer = { id: string; name: string; phone: string | null; balance: number }
-export type TillShop = { id: string; name: string; phone: string | null; address: string | null; receipt_footer: string | null }
+export type TillShop = { id: string; name: string; phone: string | null; address: string | null; receipt_footer: string | null; country?: string; currency?: string; language?: string }
 export type SaleBody = {
   client_id: string
   items: Array<{ product_id: string; quantity: number }>

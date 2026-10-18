@@ -1,3 +1,4 @@
+import { DEFAULT_FORMAT, formatMoney, type ShopFormat } from '@/lib/format'
 import { randomUUID } from 'node:crypto'
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise'
 import { getPool, iso, likePattern, LocalDataError, productFromRow, roundMoney, withTransaction } from '@/lib/local-db'
@@ -79,14 +80,14 @@ export async function getPartyLedger(table: PartyTable, shopId: string, id: stri
 }
 
 // A payment lowers what is owed: the customer pays the shop, or the shop pays the supplier.
-export async function recordPartyPayment(table: PartyTable, shopId: string, id: string, input: { amount: number; note?: string }, actorId: string) {
+export async function recordPartyPayment(table: PartyTable, shopId: string, id: string, input: { amount: number; note?: string }, actorId: string, format: ShopFormat = DEFAULT_FORMAT) {
   return withTransaction(async (connection) => {
     const party = await findParty(connection, table, shopId, id, true)
     if (!party) throw new LocalDataError(`${LABEL[table]} not found.`, 404)
     const amount = roundMoney(input.amount)
     if (amount > party.balance) {
       const who = table === 'customers' ? `${party.name} owes` : `You owe ${party.name}`
-      throw new LocalDataError(`The payment is more than the balance. ${who} ₨ ${party.balance.toLocaleString('en-PK', { maximumFractionDigits: 2 })}.`, 400, 'overpayment')
+      throw new LocalDataError(`The payment is more than the balance. ${who} ${formatMoney(party.balance, format)}.`, 400, 'overpayment')
     }
     const ledger = LEDGER[table]
     const now = new Date()

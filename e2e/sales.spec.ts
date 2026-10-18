@@ -185,9 +185,9 @@ test.describe('Sales page', () => {
     await dialog.getByRole('button', { name: 'Return everything' }).click()
     await expect(dialog.getByLabel(`Quantity of ${product.name} returned`)).toHaveValue('2')
     await dialog.getByLabel('Reason (optional)').fill('Wrong size')
-    await dialog.getByRole('button', { name: 'Record return · ₨ 300' }).click()
+    await dialog.getByRole('button', { name: 'Record return · Rs 300' }).click()
 
-    await expect(dialog.getByRole('status')).toHaveText(`Return saved on receipt #${sale.number}: ₨ 300. Give ₨ 300 back in cash.`)
+    await expect(dialog.getByRole('status')).toHaveText(`Return saved on receipt #${sale.number}: Rs 300. Give Rs 300 back in cash.`)
     await expect(dialog.getByText('Wrong size', { exact: false })).toBeVisible()
     await expect(dialog.getByRole('button', { name: 'Return items' })).toHaveCount(0)
     await page.keyboard.press('Escape')

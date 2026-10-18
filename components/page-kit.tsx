@@ -3,13 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
+import { formatDate, formatDateTime, formatMoney } from '@/lib/format'
 import { playSound } from '@/lib/sounds'
 
 // Building blocks shared by the shop screens.
 
-export const money = (value: number) => `₨ ${Number(value).toLocaleString('en-PK', { maximumFractionDigits: 2 })}`
-export const shortDate = (value: string) => new Date(value).toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' })
-export const dateTime = (value: string) => new Date(value).toLocaleString('en-PK', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+// In the signed-in shop's currency and locale (lib/format.ts, set by the auth provider).
+export const money = (value: number) => formatMoney(value)
+export const shortDate = (value: string) => formatDate(value)
+export const dateTime = (value: string) => formatDateTime(value)
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly code?: string) {

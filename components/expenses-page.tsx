@@ -11,6 +11,7 @@ import { useAuth } from '@/components/auth/auth-provider'
 import { EmptyState, ReceiptIllustration } from '@/components/illustrations'
 import { api, money, Notice, PageHeader, SkeletonRows, StatCard, useAction, useApi } from '@/components/page-kit'
 import { addDays, dayKey, DEFAULT_TIMEZONE } from '@/lib/time'
+import { currencySymbol, shopFormat } from '@/lib/format'
 
 // Money spent running the shop. Expenses lower net profit in Reports and the day-end report.
 
@@ -28,7 +29,7 @@ function lastDayOfMonth(month: string) {
   return date.toISOString().slice(0, 10)
 }
 
-const dayLabel = (day: string, today: string) => day === today ? 'Today' : day === addDays(today, -1) ? 'Yesterday' : new Date(`${day}T12:00:00Z`).toLocaleDateString('en-PK', { weekday: 'long', day: 'numeric', month: 'short', timeZone: 'UTC' })
+const dayLabel = (day: string, today: string) => day === today ? 'Today' : day === addDays(today, -1) ? 'Yesterday' : new Date(`${day}T12:00:00Z`).toLocaleDateString(shopFormat().locale, { weekday: 'long', day: 'numeric', month: 'short', timeZone: 'UTC' })
 
 export default function ExpensesPage() {
   const { shop } = useAuth()
@@ -98,7 +99,7 @@ export default function ExpensesPage() {
                   })}
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <div><Label htmlFor="expense-amount">Amount (₨)</Label><Input id="expense-amount" className="mt-1.5" type="number" min="0.01" step="0.01" required value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} /></div>
+                  <div><Label htmlFor="expense-amount">Amount ({currencySymbol()})</Label><Input id="expense-amount" className="mt-1.5" type="number" min="0.01" step="0.01" required value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} /></div>
                   <div><Label htmlFor="expense-day">Date</Label><Input id="expense-day" className="mt-1.5" type="date" max={today} required value={form.spent_on} onChange={(event) => setForm({ ...form, spent_on: event.target.value })} /></div>
                 </div>
                 <div><Label htmlFor="expense-note">Note</Label><Input id="expense-note" className="mt-1.5" maxLength={300} placeholder="e.g. October rent, K-Electric bill" value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} /></div>
@@ -122,7 +123,7 @@ export default function ExpensesPage() {
         </div>
 
         <Card className="shopos-rise">
-          <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">{new Date(`${month}-15T00:00:00Z`).toLocaleDateString('en-PK', { month: 'long', year: 'numeric', timeZone: 'UTC' })}</CardTitle><span className="text-sm font-semibold tabular-nums">{money(data?.total ?? 0)}</span></CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between"><CardTitle className="text-base">{new Date(`${month}-15T00:00:00Z`).toLocaleDateString(shopFormat().locale, { month: 'long', year: 'numeric', timeZone: 'UTC' })}</CardTitle><span className="text-sm font-semibold tabular-nums">{money(data?.total ?? 0)}</span></CardHeader>
           <CardContent className="p-0">
             {list.loading && !data ? <SkeletonRows /> : days.length ? days.map((day) => {
               const items = data!.expenses.filter((expense) => expense.spent_on === day)

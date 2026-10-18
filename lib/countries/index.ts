@@ -1,5 +1,5 @@
 import { COUNTRIES } from './data'
-import type { CountryConfig } from './types'
+import type { CountryConfig, LanguageCode } from './types'
 
 export type { CountryConfig, LanguageCode, PaymentOption } from './types'
 export { COUNTRIES }
@@ -52,4 +52,22 @@ export function countryOptions(displayLocale = 'en') {
 export function pickerOptions(list: Array<{ code: string; name: string }> | null, selected: string) {
   if (list) return list
   return selected ? [{ code: selected, name: BY_CODE.get(selected)?.name ?? selected }] : []
+}
+
+// App languages with translations (messages/<code>.json); English is the fallback for any missing text.
+export const LANGUAGES = ['en', 'ur', 'hi', 'ar', 'fr', 'sw'] as const satisfies readonly LanguageCode[]
+export const RTL_LANGUAGES: LanguageCode[] = ['ur', 'ar']
+export const LANGUAGE_NAMES: Record<LanguageCode, string> = { en: 'English', ur: 'اردو (Urdu)', hi: 'हिन्दी (Hindi)', ar: 'العربية (Arabic)', fr: 'Français (French)', sw: 'Kiswahili (Swahili)' }
+
+// Any ISO 4217 currency the runtime knows (Intl), for shops in countries without their own entry.
+export function isCurrencyCode(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^[A-Z]{3}$/.test(value)) return false
+  try {
+    const known = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.('currency')
+    if (known) return known.includes(value)
+    new Intl.NumberFormat('en', { style: 'currency', currency: value })
+    return true
+  } catch {
+    return false
+  }
 }

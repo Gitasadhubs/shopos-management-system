@@ -1,3 +1,4 @@
+import { formatFor } from '@/lib/format'
 import { NextResponse, type NextRequest } from 'next/server'
 import { z } from 'zod'
 import { archiveParty, createParty, getPartyLedger, listParties, recordPartyPayment, updateParty } from '@/lib/local-business'
@@ -76,6 +77,6 @@ export function paymentRoute(table: Table) {
     if (id instanceof NextResponse) return id
     const body = await parseBody(request, partyPaymentSchema)
     if (body instanceof NextResponse) return body
-    return jsonResponse(await recordPartyPayment(table, shop.id, id, body.data, user.id), null, 201)
+    return jsonResponse(await recordPartyPayment(table, shop.id, id, body.data, user.id, formatFor(shop)), null, 201)
   })
 }

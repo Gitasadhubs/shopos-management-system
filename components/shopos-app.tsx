@@ -26,25 +26,26 @@ import SalesPage from '@/components/sales-page'
 import { receiptLabel, ReturnBadge } from '@/components/receipt'
 import { EmptyState, ReceiptIllustration, StorefrontIllustration } from '@/components/illustrations'
 import { Avatar, money, StatCard } from '@/components/page-kit'
+import { t } from '@/lib/i18n'
 
 type NavItem = { href: string; label: string; permission: Permission; icon: typeof LayoutDashboard; group: 'Workspace' | 'Manage'; selfHostedOnly?: boolean }
 
 // selfHostedOnly: screens backed by MariaDB storage (lib/local-*.ts).
 const navigation: NavItem[] = [
-  { href: '/dashboard', label: 'Dashboard', permission: 'dashboard', icon: LayoutDashboard, group: 'Workspace' },
-  { href: '/pos', label: 'POS', permission: 'pos', icon: ShoppingCart, group: 'Workspace' },
-  { href: '/sales', label: 'Sales', permission: 'pos', icon: ReceiptText, group: 'Workspace', selfHostedOnly: true },
-  { href: '/inventory', label: 'Inventory', permission: 'inventory', icon: Boxes, group: 'Workspace' },
-  { href: '/customers', label: 'Customers', permission: 'customers', icon: BookUser, group: 'Workspace', selfHostedOnly: true },
-  { href: '/suppliers', label: 'Suppliers', permission: 'suppliers', icon: Truck, group: 'Workspace', selfHostedOnly: true },
-  { href: '/purchases', label: 'Purchases', permission: 'purchases', icon: PackagePlus, group: 'Workspace', selfHostedOnly: true },
-  { href: '/expenses', label: 'Expenses', permission: 'expenses', icon: Wallet, group: 'Workspace', selfHostedOnly: true },
-  { href: '/reports', label: 'Reports', permission: 'reports', icon: BarChart3, group: 'Workspace', selfHostedOnly: true },
-  { href: '/day-end', label: 'Day end', permission: 'reports', icon: CalendarCheck, group: 'Workspace', selfHostedOnly: true },
-  { href: '/settings/users', label: 'Staff', permission: 'users', icon: Users, group: 'Manage', selfHostedOnly: true },
-  { href: '/settings', label: 'Settings', permission: 'dashboard', icon: Settings, group: 'Manage', selfHostedOnly: true },
-  { href: '/billing', label: 'Billing', permission: 'billing', icon: CreditCard, group: 'Manage', selfHostedOnly: true },
-  { href: '/account', label: 'Account', permission: 'dashboard', icon: UserRound, group: 'Manage', selfHostedOnly: true },
+  { href: '/dashboard', label: 'nav.dashboard', permission: 'dashboard', icon: LayoutDashboard, group: 'Workspace' },
+  { href: '/pos', label: 'nav.pos', permission: 'pos', icon: ShoppingCart, group: 'Workspace' },
+  { href: '/sales', label: 'nav.sales', permission: 'pos', icon: ReceiptText, group: 'Workspace', selfHostedOnly: true },
+  { href: '/inventory', label: 'nav.inventory', permission: 'inventory', icon: Boxes, group: 'Workspace' },
+  { href: '/customers', label: 'nav.customers', permission: 'customers', icon: BookUser, group: 'Workspace', selfHostedOnly: true },
+  { href: '/suppliers', label: 'nav.suppliers', permission: 'suppliers', icon: Truck, group: 'Workspace', selfHostedOnly: true },
+  { href: '/purchases', label: 'nav.purchases', permission: 'purchases', icon: PackagePlus, group: 'Workspace', selfHostedOnly: true },
+  { href: '/expenses', label: 'nav.expenses', permission: 'expenses', icon: Wallet, group: 'Workspace', selfHostedOnly: true },
+  { href: '/reports', label: 'nav.reports', permission: 'reports', icon: BarChart3, group: 'Workspace', selfHostedOnly: true },
+  { href: '/day-end', label: 'nav.dayEnd', permission: 'reports', icon: CalendarCheck, group: 'Workspace', selfHostedOnly: true },
+  { href: '/settings/users', label: 'nav.staff', permission: 'users', icon: Users, group: 'Manage', selfHostedOnly: true },
+  { href: '/settings', label: 'nav.settings', permission: 'dashboard', icon: Settings, group: 'Manage', selfHostedOnly: true },
+  { href: '/billing', label: 'nav.billing', permission: 'billing', icon: CreditCard, group: 'Manage', selfHostedOnly: true },
+  { href: '/account', label: 'nav.account', permission: 'dashboard', icon: UserRound, group: 'Manage', selfHostedOnly: true },
 ]
 
 type Subscription = { state: 'trialing' | 'active' | 'suspended' | 'expired'; days_left: number; current_period_end: string; can_write: boolean; needs_card?: boolean }
@@ -103,12 +104,12 @@ function TargetRing({ sales, target }: { sales: number; target: number }) {
 }
 
 const CHECKLIST: Array<{ key: keyof NonNullable<DashboardData['checklist']>; label: string; href: string }> = [
-  { key: 'products', label: 'Add your products', href: '/inventory' },
-  { key: 'sale', label: 'Make your first sale', href: '/pos' },
-  { key: 'profile', label: 'Add your shop phone or address for receipts', href: '/settings' },
-  { key: 'customers', label: 'Add a khata customer', href: '/customers' },
-  { key: 'staff', label: 'Invite a cashier or manager', href: '/settings/users' },
-  { key: 'dayEnd', label: 'Turn on the daily day-end report', href: '/settings#day-end' },
+  { key: 'products', label: 'start.products', href: '/inventory' },
+  { key: 'sale', label: 'start.sale', href: '/pos' },
+  { key: 'profile', label: 'start.profile', href: '/settings' },
+  { key: 'customers', label: 'start.customers', href: '/customers' },
+  { key: 'staff', label: 'start.staff', href: '/settings/users' },
+  { key: 'dayEnd', label: 'start.dayEnd', href: '/settings#day-end' },
 ]
 
 // First steps for a new shop. Hidden once everything is done or the owner dismisses it.
@@ -119,15 +120,15 @@ function GettingStarted({ checklist, shopId }: { checklist: NonNullable<Dashboar
   if (hidden || done === CHECKLIST.length) return null
   return <Card className="mb-6 overflow-hidden border-emerald-200 shopos-rise">
     <CardHeader className="flex flex-row items-start justify-between gap-4">
-      <div><CardTitle className="text-base">Get your shop ready</CardTitle><p className="mt-1 text-xs text-muted-foreground">{done} of {CHECKLIST.length} done</p></div>
-      <button type="button" className="text-xs font-medium text-muted-foreground hover:text-stone-900" onClick={() => { setHidden(true); try { window.localStorage.setItem(key, '1') } catch {} }}>Hide</button>
+      <div><CardTitle className="text-base">{t('start.title')}</CardTitle><p className="mt-1 text-xs text-muted-foreground">{t('start.progress', { done, total: CHECKLIST.length })}</p></div>
+      <button type="button" className="text-xs font-medium text-muted-foreground hover:text-stone-900" onClick={() => { setHidden(true); try { window.localStorage.setItem(key, '1') } catch {} }}>{t('start.hide')}</button>
     </CardHeader>
     <CardContent>
       <div className="mb-4 h-2 overflow-hidden rounded-full bg-stone-100"><div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-emerald-600 transition-all duration-700" style={{ width: `${(done / CHECKLIST.length) * 100}%` }} /></div>
       <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{CHECKLIST.map((step) => <li key={step.key}>
         <Link href={step.href} onClick={() => playSound('tap')} className={`flex items-center gap-3 rounded-xl border p-3 text-sm transition ${checklist[step.key] ? 'border-emerald-100 bg-emerald-50/60 text-emerald-800' : 'bg-white hover:border-emerald-200 hover:shadow-sm'}`}>
           <span className={`flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${checklist[step.key] ? 'bg-emerald-600 text-white' : 'border-2 border-stone-300'}`}>{checklist[step.key] ? '✓' : ''}</span>
-          <span className={checklist[step.key] ? 'line-through decoration-emerald-400' : 'font-medium'}>{step.label}</span>
+          <span className={checklist[step.key] ? 'line-through decoration-emerald-400' : 'font-medium'}>{t(step.label)}</span>
         </Link>
       </li>)}</ul>
     </CardContent>
@@ -150,21 +151,21 @@ function AppSidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
     <div className="flex-1 overflow-y-auto px-3 py-4">
       <nav className="flex flex-col gap-1">
         {loading ? <p className="px-3 py-4 text-sm text-muted-foreground">Loading account…</p> : groups.map(({ group, items }) => <div key={group} className="mb-2">
-          <p className="px-3 pb-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{group}</p>
+          <p className="px-3 pb-2 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t(`nav.${group.toLowerCase()}`)}</p>
           {items.map(({ href, label, icon: Icon }) => {
             const active = pathname === href || (href === '/dashboard' && pathname === '/')
             return <Link key={href} href={href} onClick={() => { playSound('tap'); onClose() }} className={`group flex min-h-11 items-center gap-3 rounded-lg px-4 text-sm font-medium transition-colors ${active ? 'bg-emerald-50 text-emerald-700' : 'text-stone-600 hover:bg-stone-50 hover:text-stone-900'}`}>
-              <Icon className={`size-[18px] transition-transform group-hover:scale-110 ${active ? 'text-emerald-600' : ''}`} />{label}
+              <Icon className={`size-[18px] transition-transform group-hover:scale-110 ${active ? 'text-emerald-600' : ''}`} />{t(label)}
             </Link>
           })}
         </div>)}
       </nav>
     </div>
     <div className="m-3 rounded-xl bg-stone-50 p-4">
-      <p className="text-xs font-medium text-stone-600">Signed in as</p>
+      <p className="text-xs font-medium text-stone-600">{t('nav.signedInAs')}</p>
       <Separator className="my-3" />
       <div className="flex items-center gap-2"><Avatar name={name} className="size-8 text-xs" /><div className="min-w-0"><p className="truncate text-xs font-semibold">{name}</p><p className="text-[11px] capitalize text-muted-foreground">{role?.role ?? 'Local'}</p></div></div>
-      {selfHosted && <Button variant="ghost" size="sm" className="mt-3 w-full justify-start text-stone-600" onClick={() => void signOut()}><LogOut className="mr-2 size-4" />Sign out</Button>}
+      {selfHosted && <Button variant="ghost" size="sm" className="mt-3 w-full justify-start text-stone-600" onClick={() => void signOut()}><LogOut className="mr-2 size-4" />{t('nav.signOut')}</Button>}
     </div>
   </aside>
 }
@@ -178,7 +179,7 @@ function PlanBadge({ subscription, owner }: { subscription: Subscription; owner:
 
 function SoundToggle() {
   const enabled = useSoundEnabled()
-  return <button type="button" aria-label={enabled ? 'Mute sounds' : 'Turn sounds on'} title={enabled ? 'Mute sounds' : 'Turn sounds on'} onClick={() => setSoundEnabled(!enabled)} className="flex size-10 items-center justify-center rounded-lg text-stone-500 transition hover:bg-stone-100 hover:text-stone-900">
+  return <button type="button" aria-label={t(enabled ? 'pos.muteSounds' : 'pos.soundsOn')} title={t(enabled ? 'pos.muteSounds' : 'pos.soundsOn')} onClick={() => setSoundEnabled(!enabled)} className="flex size-10 items-center justify-center rounded-lg text-stone-500 transition hover:bg-stone-100 hover:text-stone-900">
     {enabled ? <Volume2 className="size-5" /> : <VolumeX className="size-5" />}
   </button>
 }
@@ -186,16 +187,16 @@ function SoundToggle() {
 function Header({ onMenu }: { onMenu: () => void }) {
   const pathname = usePathname()
   const { role, roleError, shop, selfHosted } = useAuth()
-  const current = navigation.find((item) => item.href === pathname)?.label ?? 'Dashboard'
+  const current = t(navigation.find((item) => item.href === pathname)?.label ?? 'nav.dashboard')
   const subscription = shop?.subscription as Subscription | undefined
   const owner = role?.role === 'owner'
   return <>
     {roleError && <div role="alert" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">{roleError}</div>}
     {subscription && !subscription.can_write && <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border-b border-rose-200 bg-rose-50 px-4 py-2 text-center text-sm text-rose-800">
-      <span>{subscription.needs_card ? 'Your free trial starts once a card is added.' : subscription.state === 'suspended' ? 'This shop is suspended.' : 'Your subscription has ended.'} {subscription.needs_card ? 'Until then the shop is read-only.' : 'The shop is read-only until it is renewed.'}</span>
-      {owner ? <Link href="/billing" className="font-semibold underline underline-offset-2">{subscription.needs_card ? "Add a card in Billing" : "Renew in Billing"}</Link> : <span>{subscription.needs_card ? "Ask the shop owner to add a card." : "Ask the shop owner to renew."}</span>}
+      <span>{t(subscription.needs_card ? 'banner.needsCard' : subscription.state === 'suspended' ? 'banner.suspended' : 'banner.ended')}</span>
+      {owner ? <Link href="/billing" className="font-semibold underline underline-offset-2">{t(subscription.needs_card ? 'banner.addCard' : 'banner.renew')}</Link> : <span>{t(subscription.needs_card ? 'banner.askOwnerCard' : 'banner.askOwnerRenew')}</span>}
     </div>}
-    {subscription?.state === 'trialing' && subscription.days_left <= 3 && owner && <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">Your free trial ends in {subscription.days_left} day{subscription.days_left === 1 ? '' : 's'}. <Link href="/billing" className="font-semibold underline underline-offset-2">See plans</Link></div>}
+    {subscription?.state === 'trialing' && subscription.days_left <= 3 && owner && <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">{subscription.days_left === 1 ? t('banner.trialEndsOne') : t('banner.trialEnds', { days: subscription.days_left })} <Link href="/billing" className="font-semibold underline underline-offset-2">{t('banner.seePlans')}</Link></div>}
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b bg-white/90 px-4 backdrop-blur sm:px-8">
       <button type="button" aria-label="Open navigation" className="lg:hidden" onClick={onMenu}><Menu /></button>
       <h1 className="text-sm font-semibold text-stone-900">{current}</h1>

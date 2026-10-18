@@ -628,6 +628,14 @@ const migrations: string[][] = [
     `ALTER TABLE shops ADD COLUMN IF NOT EXISTS country CHAR(2) NOT NULL DEFAULT 'PK' AFTER timezone`,
     `ALTER TABLE shops ADD KEY IF NOT EXISTS shops_country_idx (country)`,
   ],
+  [
+    // The currency the shop sells in (ISO 4217) and the language of its app, receipts and messages.
+    // New shops take both from their country; existing shops were all PKR, in English.
+    // Rollback: deploy/rollback/0011-shop-currency-language.sql.
+    `ALTER TABLE shops
+      ADD COLUMN IF NOT EXISTS currency CHAR(3) NOT NULL DEFAULT 'PKR' AFTER country,
+      ADD COLUMN IF NOT EXISTS language VARCHAR(5) NOT NULL DEFAULT 'en' AFTER currency`,
+  ],
 ]
 
 // Survives Next dev hot reloads, which would otherwise open a new pool per edit.

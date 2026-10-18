@@ -1,6 +1,8 @@
 'use client'
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
+import { setShopFormat } from '@/lib/format'
+import { applyLanguage } from '@/lib/i18n'
 
 type Account = { user: any; role: any; shop: any; loading: boolean; roleError: string | null; selfHosted: boolean; signOut: () => Promise<void>; refresh: () => Promise<void> }
 const AuthContext = createContext<Account | null>(null)
@@ -16,6 +18,9 @@ export function AuthProvider({ children }: { children: React.ReactNode; selfHost
       const body = await response.json()
       if (!response.ok) throw new Error(body.error ?? 'Could not load your account.')
       const user = body.data.user
+      // Money and dates on every screen follow the shop's currency and locale; RTL languages flip the page.
+      setShopFormat(user.shop ? { currency: user.shop.currency, locale: user.shop.locale, receipt: user.shop.receipt } : null)
+      applyLanguage(user.shop?.language)
       // shop carries the name, time zone, country and subscription (see SessionShop in lib/local-auth.ts).
       setAccount({ user, role: { role: user.role, full_name: user.full_name, shop_id: user.shop?.id ?? null }, shop: user.shop ?? null, loading: false, roleError: null })
     } catch (error) {
