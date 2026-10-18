@@ -1,5 +1,4 @@
 import { Suspense } from 'react'
-import { AuthPage } from '@/app/auth-pages'
 import { LocalLoginPage } from '@/components/auth/local-auth-pages'
 
 function LoginSkeleton() {
@@ -7,7 +6,7 @@ function LoginSkeleton() {
 }
 
 export default function Login() {
-  return <Suspense fallback={<LoginSkeleton />}>{process.env.SHOPOS_STORAGE === 'mariadb' ? <LocalLoginPage /> : <AuthPage type="login" />}</Suspense>
+  return <Suspense fallback={<LoginSkeleton />}><LocalLoginPage /></Suspense>
 }
 
 export const dynamic = 'force-dynamic'
