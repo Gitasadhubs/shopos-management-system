@@ -191,10 +191,20 @@ cmd_restore() {
   say 'Backing up the current data first, just in case'
   cmd_backup || warn 'Could not back up the current data; continuing.'
   compose stop app
-  gunzip -c "$file" | compose exec -T db sh -c 'exec mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'
-  # The stored files from the same moment, if that archive exists.
+  local host; host=$(env_get SHOPOS_DB_HOST)
+  if [[ -n $host && $host != db ]]; then
+    # A separate database server: the app's own user, through a throwaway client container.
+    local port user name; port=$(env_get SHOPOS_DB_PORT); user=$(env_get SHOPOS_DB_USER); name=$(env_get SHOPOS_DB_NAME)
+    gunzip -c "$file" | docker run --rm -i -e MYSQL_PWD="$(env_get SHOPOS_DB_PASSWORD)" mariadb:11.4 \
+      mariadb -h "$host" -P "${port:-3306}" -u "${user:-shopos}" "${name:-shopos}"
+  else
+    gunzip -c "$file" | compose exec -T db sh -c 'exec mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'
+  fi
+  # The stored files from the same moment, if that archive exists (only kept for the minio container).
   local files; files=$(dirname "$file")/shopos-files-$(basename "$file" .sql.gz | sed 's/^shopos-//').tar.gz
-  if [[ -f $files ]]; then
+  if [[ -n $host && $host != db ]]; then
+    warn 'Stored files live on the database server; they are left as they are.'
+  elif [[ -f $files ]]; then
     say "Restoring stored files from $(basename "$files")"
     compose stop minio
     docker run --rm -v "${PROJECT}_minio-data:/data" -v "$files:/files.tar.gz:ro" alpine:3.20 sh -c 'rm -rf /data/* /data/.minio.sys && tar -xzf /files.tar.gz -C /data'

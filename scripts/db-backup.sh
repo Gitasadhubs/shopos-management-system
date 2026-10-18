@@ -14,9 +14,13 @@ export MYSQL_PWD="$SHOPOS_DB_PASSWORD"
 
 # depends_on only holds for "docker compose up": after a reboot Docker restarts this container and
 # the database together, so wait until the database answers.
+# SHOPOS_DB_HOST: the db container, or a separate database server.
+DB_HOST="${SHOPOS_DB_HOST:-db}"
+DB_PORT="${SHOPOS_DB_PORT:-3306}"
+
 wait_for_db() {
   tries=0
-  until mariadb-admin --host=db --user="$SHOPOS_DB_USER" ping >/dev/null 2>&1; do
+  until mariadb-admin --host="$DB_HOST" --port="$DB_PORT" --user="$SHOPOS_DB_USER" ping >/dev/null 2>&1; do
     tries=$((tries + 1))
     [ "$tries" -ge 60 ] && return 1
     sleep 5
@@ -28,7 +32,7 @@ while true; do
   target="/backups/shopos-$stamp.sql.gz"
   # Dump to a file first: in "dump | gzip" the shell only sees gzip's exit status, so a failed
   # dump would be stored as an empty backup.
-  if wait_for_db && mariadb-dump --host=db --user="$SHOPOS_DB_USER" --single-transaction --routines --triggers --hex-blob "$SHOPOS_DB_NAME" > "/backups/.dump-$stamp.sql" \
+  if wait_for_db && mariadb-dump --host="$DB_HOST" --port="$DB_PORT" --user="$SHOPOS_DB_USER" --single-transaction --routines --triggers --hex-blob "$SHOPOS_DB_NAME" > "/backups/.dump-$stamp.sql" \
     && gzip -c "/backups/.dump-$stamp.sql" > "$target.partial"; then
     rm -f "/backups/.dump-$stamp.sql"
     mv "$target.partial" "$target"
@@ -39,7 +43,7 @@ while true; do
     echo "backup: FAILED at $stamp, retrying in ${retry}s" >&2
     next="$retry"
   fi
-  if [ -d /minio-data ]; then
+  if [ -d /minio-data ] && [ "${SHOPOS_BACKUP_FILES:-1}" != 0 ]; then
     files="/backups/shopos-files-$stamp.tar.gz"
     if tar -czf "$files.partial" -C /minio-data .; then
       mv "$files.partial" "$files"

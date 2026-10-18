@@ -83,8 +83,10 @@ services:
       HOSTNAME: 0.0.0.0
       PORT: 3000
       SHOPOS_STORAGE: mariadb
-      SHOPOS_DB_HOST: db
-      SHOPOS_DB_PORT: 3306
+      # A separate database server (shopos-infra db.tf, or any MariaDB 11.4): set SHOPOS_DB_HOST in the env
+      # file. The db container then stays idle as a fallback.
+      SHOPOS_DB_HOST: ${SHOPOS_DB_HOST:-db}
+      SHOPOS_DB_PORT: ${SHOPOS_DB_PORT:-3306}
       # File storage. Point these at AWS S3 or Cloudflare R2 instead to move files off this machine.
       SHOPOS_S3_ENDPOINT: ${SHOPOS_S3_ENDPOINT:-http://minio:9000}
       SHOPOS_S3_REGION: ${SHOPOS_S3_REGION:-us-east-1}
@@ -238,6 +240,10 @@ services:
     entrypoint: ["/bin/sh", "/usr/local/bin/db-backup.sh"]
     environment:
       <<: *db-credentials
+      SHOPOS_DB_HOST: ${SHOPOS_DB_HOST:-db}
+      SHOPOS_DB_PORT: ${SHOPOS_DB_PORT:-3306}
+      # 0: stored files are not archived here (they live on a separate MinIO, backed up there).
+      SHOPOS_BACKUP_FILES: ${SHOPOS_BACKUP_FILES:-1}
       BACKUP_INTERVAL_SECONDS: ${SHOPOS_BACKUP_INTERVAL_SECONDS:-86400}
       BACKUP_KEEP_DAYS: ${SHOPOS_BACKUP_KEEP_DAYS:-14}
       TZ: ${SHOPOS_TZ:-Asia/Karachi}
