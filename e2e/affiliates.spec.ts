@@ -62,6 +62,7 @@ test('a partner applies, is approved, refers a shop and is paid 20% of its first
   const signupPage = await (await page.context().browser()!.newContext({ storageState: { cookies: [], origins: [] }, ignoreHTTPSErrors: true })).newPage()
   await signupPage.goto(`/signup?ref=${code}`)
   await signupPage.getByLabel('Shop name').fill(shopName)
+  await signupPage.getByLabel('Country').selectOption('PK')
   await signupPage.getByLabel('Your name').fill('Referred Owner')
   await signupPage.getByLabel('Email').fill(owner)
   await signupPage.getByLabel('Password', { exact: true }).fill('Referred-owner-2026!')

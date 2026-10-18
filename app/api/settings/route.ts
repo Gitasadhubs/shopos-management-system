@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
+import { isCountryCode } from '@/lib/countries'
 import { getShop, updateShop } from '@/lib/local-platform'
 import { jsonResponse, parseBody, withShop } from '@/lib/local-session'
 import { isValidTimeZone } from '@/lib/time'
@@ -15,6 +16,8 @@ const shopSchema = z.object({
   address: z.string().trim().max(300).optional(),
   receipt_footer: z.string().trim().max(300).optional(),
   timezone: z.string().trim().max(64).refine(isValidTimeZone, 'Choose a valid time zone.').optional(),
+  // ISO 3166-1 alpha-2; sets currency, language, tax and receipt rules (lib/countries).
+  country: z.string().trim().toUpperCase().refine(isCountryCode, 'Choose a country.').optional(),
   daily_target: z.coerce.number().finite().min(0, 'The daily target cannot be negative.').max(1_000_000_000).nullable().optional(),
   report_enabled: z.boolean().optional(),
   report_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Choose a time like 22:00.').optional(),

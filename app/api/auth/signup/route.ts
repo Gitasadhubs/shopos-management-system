@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { emailField, nameField, passwordField } from '@/lib/auth-schemas'
+import { isCountryCode, visitorCountry } from '@/lib/countries'
 import { signUpShop } from '@/lib/local-auth'
 import { blockCrossOrigin, clientInfo, errorResponse, isSelfHosted, jsonResponse, parseBody } from '@/lib/local-session'
 
@@ -20,10 +21,14 @@ export async function POST(request: Request) {
     password: passwordField,
     // A partner's referral code from the link the visitor came through (?ref=CODE).
     ref: z.string().trim().max(40).optional(),
+    // ISO 3166-1 alpha-2, chosen on the form (pre-filled from the visitor's location).
+    country: z.string().trim().toUpperCase().refine(isCountryCode, 'Choose your country.').optional(),
   }))
   if (body instanceof NextResponse) return body
   try {
-    const user = await signUpShop(body.data, await clientInfo())
+    // Without a choice on the form: Cloudflare's guess from the visitor's IP address.
+    const country = body.data.country ?? visitorCountry(request.headers)
+    const user = await signUpShop({ ...body.data, country }, await clientInfo())
     return jsonResponse({ email: user.email }, null, 201)
   } catch (error) {
     return errorResponse(error, 'Unable to create your shop.')

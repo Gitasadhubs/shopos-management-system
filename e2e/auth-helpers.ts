@@ -102,7 +102,7 @@ export async function signUpShop(shopName = `Shop ${Date.now().toString(36)}${Ma
   const email = uniqueEmail('owner')
   const password = 'Second-owner-2026!'
   const context = await anonymousContext()
-  const created = await context.post('/api/auth/signup', { data: { shop_name: shopName, full_name: `Owner of ${shopName}`, email, password } })
+  const created = await context.post('/api/auth/signup', { data: { shop_name: shopName, full_name: `Owner of ${shopName}`, email, password, country: 'PK' } })
   expect(created.status(), await created.text()).toBe(201)
   const token = tokenIn(linkIn((await latestEmail(email, 'Confirm')).text, '/verify-email'))
   expect((await context.post('/api/auth/verify-email', { data: { token } })).ok()).toBe(true)

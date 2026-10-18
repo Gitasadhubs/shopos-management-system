@@ -621,6 +621,13 @@ const migrations: string[][] = [
     // subscription (in its Paddle trial) or a payment is in place.
     `ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS card_required TINYINT(1) NOT NULL DEFAULT 0 AFTER cancel_at_period_end`,
   ],
+  [
+    // Each shop's country (ISO 3166-1 alpha-2; 'ZZ' = not given), the key to lib/countries: currency,
+    // language, tax, receipts and payment options follow from it. Shops from before are in Pakistan.
+    // Rollback: deploy/rollback/0010-shop-country.sql.
+    `ALTER TABLE shops ADD COLUMN IF NOT EXISTS country CHAR(2) NOT NULL DEFAULT 'PK' AFTER timezone`,
+    `ALTER TABLE shops ADD KEY IF NOT EXISTS shops_country_idx (country)`,
+  ],
 ]
 
 // Survives Next dev hot reloads, which would otherwise open a new pool per edit.

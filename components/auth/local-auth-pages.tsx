@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { Check, LoaderCircle, Store } from 'lucide-react'
@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { CelebrateIllustration, StorefrontIllustration } from '@/components/illustrations'
+import { countryOptions } from '@/lib/countries'
 
 // Sign-in pages for self-hosted mode (email + password accounts in MariaDB, see lib/local-auth.ts).
 
@@ -155,8 +156,11 @@ export function LocalLoginPage() {
 
 // Public signup: a new shop on a free trial, with the person signing up as its owner.
 // requireCard: trials need a card (admin setting); the owner adds it on Billing after confirming the email.
-export function LocalSignupPage({ requireCard = false }: { requireCard?: boolean }) {
+export function LocalSignupPage({ requireCard = false, suggestedCountry = 'ZZ' }: { requireCard?: boolean; suggestedCountry?: string }) {
   const [form, setForm] = useState({ shop_name: '', full_name: '', phone: '', email: '', password: '', confirm: '' })
+  // Pre-filled from the visitor's location; sets the shop's currency, language, tax and time zone.
+  const [country, setCountry] = useState(suggestedCountry === 'ZZ' ? '' : suggestedCountry)
+  const options = useMemo(() => countryOptions(), [])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [created, setCreated] = useState('')
@@ -179,7 +183,7 @@ export function LocalSignupPage({ requireCard = false }: { requireCard?: boolean
     if (problem) return setError(problem)
     setBusy(true)
     setError('')
-    const result = await post<{ email: string }>('/api/auth/signup', { shop_name: form.shop_name, full_name: form.full_name, phone: form.phone, email: form.email, password: form.password, ...(ref ? { ref } : {}) })
+    const result = await post<{ email: string }>('/api/auth/signup', { shop_name: form.shop_name, full_name: form.full_name, phone: form.phone, email: form.email, password: form.password, country, ...(ref ? { ref } : {}) })
     setBusy(false)
     if (result.ok || result.code === 'email_failed') setCreated(result.data?.email ?? form.email)
     if (!result.ok) setError(result.error ?? 'Could not create your shop.')
@@ -203,6 +207,14 @@ export function LocalSignupPage({ requireCard = false }: { requireCard?: boolean
     <AuthShell wide title="Create your shop" subtitle={requireCard ? 'Free for 14 days. You add a card to start; nothing is charged until the trial ends, and you can cancel any time.' : 'Free for 14 days. No card needed.'}>
       <form onSubmit={submit} className="grid gap-4 sm:grid-cols-2">
         <div className="sm:col-span-2"><Field id="signup-shop" label="Shop name" required maxLength={120} value={form.shop_name} onChange={set('shop_name')} /></div>
+        <div className="grid gap-1.5 sm:col-span-2">
+          <Label htmlFor="signup-country">Country</Label>
+          <select id="signup-country" required value={country} onChange={(event) => setCountry(event.target.value)} className="h-11 rounded-md border border-input bg-white px-3 text-sm">
+            <option value="" disabled>Choose your country</option>
+            {options.map((option) => <option key={option.code} value={option.code}>{option.name}</option>)}
+          </select>
+          <p className="text-xs text-muted-foreground">Sets your shop&apos;s currency, time zone and receipts. You can change it later in Settings.</p>
+        </div>
         <Field id="signup-name" label="Your name" autoComplete="name" required maxLength={120} value={form.full_name} onChange={set('full_name')} />
         <Field id="signup-phone" label="Phone (optional)" type="tel" autoComplete="tel" maxLength={40} value={form.phone} onChange={set('phone')} />
         <div className="sm:col-span-2"><Field id="signup-email" label="Email" type="email" autoComplete="email" required value={form.email} onChange={set('email')} /></div>

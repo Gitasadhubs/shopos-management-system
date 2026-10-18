@@ -96,6 +96,7 @@ test.describe('signed out', () => {
     await page.goto('/signup')
     await formReady(page)
     await page.getByLabel('Shop name').fill('Copycat Store')
+    await page.getByLabel('Country').selectOption('GB')
     await page.getByLabel('Your name').fill('Copy Cat')
     await page.getByLabel('Email').fill(OWNER.email)
     await page.getByLabel('Password', { exact: true }).fill('Copycat-pass-1')

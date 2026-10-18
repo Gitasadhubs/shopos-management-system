@@ -28,7 +28,8 @@ export type LocalUser = {
 }
 
 // The shop a signed-in user works in, with what its subscription allows.
-export type SessionShop = { id: string; name: string; timezone: string; subscription: ShopSubscription }
+// country: ISO code, the key to lib/countries (currency, language, tax, receipts).
+export type SessionShop = { id: string; name: string; timezone: string; country: string; subscription: ShopSubscription }
 export type SessionUser = LocalUser & { shop: SessionShop | null }
 
 export type PendingInvite = { id: string; email: string; full_name: string | null; role: Role; created_at: string; expires_at: string }
@@ -118,7 +119,7 @@ export async function getSessionUser(token: string | undefined): Promise<Session
   const pool = await getPool()
   const [rows] = await pool.query<RowDataPacket[]>(
     `SELECT ${USER_COLUMNS.split(', ').map((column) => `users.${column}`).join(', ')}, sessions.last_seen_at AS session_seen_at,
-       shops.name AS shop_name, shops.timezone AS shop_timezone, ${SUBSCRIPTION_COLUMNS}
+       shops.name AS shop_name, shops.timezone AS shop_timezone, shops.country AS shop_country, ${SUBSCRIPTION_COLUMNS}
      FROM sessions JOIN users ON users.id = sessions.user_id
      LEFT JOIN shops ON shops.id = users.shop_id
      LEFT JOIN subscriptions ON subscriptions.shop_id = users.shop_id
@@ -132,7 +133,7 @@ export async function getSessionUser(token: string | undefined): Promise<Session
     await pool.query('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?', [new Date(), sha256(token)])
   }
   const shop = row.shop_id && row.sub_status
-    ? { id: row.shop_id as string, name: row.shop_name as string, timezone: (row.shop_timezone as string) || DEFAULT_TIMEZONE, subscription: subscriptionFromRow(row) }
+    ? { id: row.shop_id as string, name: row.shop_name as string, timezone: (row.shop_timezone as string) || DEFAULT_TIMEZONE, country: (row.shop_country as string) || 'ZZ', subscription: subscriptionFromRow(row) }
     : null
   return { ...userFromRow(row), shop }
 }
@@ -228,7 +229,7 @@ export async function createPlatformAdmin(input: { email: string; full_name: str
 }
 
 // Public signup: a new shop on a free trial, with the person signing up as its owner.
-export async function signUpShop(input: { shop_name: string; phone?: string; full_name: string; email: string; password: string; ref?: string }, client: ClientInfo) {
+export async function signUpShop(input: { shop_name: string; phone?: string; full_name: string; email: string; password: string; ref?: string; country?: string }, client: ClientInfo) {
   const pool = await getPool()
   const email = normalizeEmail(input.email)
   // New shops per IP per hour; tests raise it with SHOPOS_SIGNUP_LIMIT since they sign up many shops.
@@ -239,7 +240,7 @@ export async function signUpShop(input: { shop_name: string; phone?: string; ful
     const { user, token } = await withTransaction(async (connection) => {
       if (await findUserByEmail(connection, email)) throw new LocalDataError('Someone with this email already has an account. Sign in instead.', 409, 'email_taken')
       // Signed up through a partner's link: the shop is credited to them (unknown or unapproved codes are ignored).
-      const shopId = await createShopWithTrial(connection, { name: input.shop_name, phone: input.phone, referred_by: await approvedAffiliateId(connection, input.ref) })
+      const shopId = await createShopWithTrial(connection, { name: input.shop_name, phone: input.phone, country: input.country, referred_by: await approvedAffiliateId(connection, input.ref) })
       const id = randomUUID()
       const now = new Date()
       await connection.query(

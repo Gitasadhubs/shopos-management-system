@@ -73,6 +73,7 @@ setup('a shop signs up, confirms the email and signs in', async ({ page }) => {
   await formReady(page)
   await expect(page.getByRole('heading', { name: 'Create your shop' })).toBeVisible()
   await page.getByLabel('Shop name').fill(OWNER.shop)
+  await page.getByLabel('Country').selectOption('PK')
   await page.getByLabel('Your name').fill(OWNER.name)
   await page.getByLabel('Phone (optional)').fill('0300 1234567')
   await page.getByLabel('Email').fill(OWNER.email)

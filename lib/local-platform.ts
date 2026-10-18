@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise'
 import { getPool, iso, likePattern, LocalDataError, PLAN_PRICE_PKR, roundMoney, TRIAL_DAYS, withTransaction, type Queryable } from '@/lib/local-db'
 import { addCommissionForPayment } from '@/lib/affiliate-core'
+import { getCountry } from '@/lib/countries'
 import { fileUrl } from '@/lib/file-keys'
 import { addTo, formatMoney, isCurrency, type Currency, type MoneyTotals } from '@/lib/money'
 import { isInterval, monthlyValue, planName, PLANS, type BillingInterval } from '@/lib/plans'
@@ -21,8 +22,9 @@ export type ShopSubscription = {
 }
 // report_*: the automatic day-end report (lib/day-end.ts).
 export type ShopReportSettings = { report_enabled: boolean; report_time: string; report_email: string | null; report_whatsapp: string | null; report_last_sent_on: string | null }
-export type LocalShop = { id: string; name: string; phone: string | null; address: string | null; receipt_footer: string | null; timezone: string; daily_target: number | null; created_at: string; subscription: ShopSubscription } & ShopReportSettings
-export type ShopInput = { name: string; phone?: string | null; address?: string | null; receipt_footer?: string | null; timezone?: string }
+export type LocalShop = { id: string; name: string; phone: string | null; address: string | null; receipt_footer: string | null; timezone: string; country: string; daily_target: number | null; created_at: string; subscription: ShopSubscription } & ShopReportSettings
+// country: ISO 3166-1 alpha-2 (lib/countries); 'ZZ' when not given.
+export type ShopInput = { name: string; phone?: string | null; address?: string | null; receipt_footer?: string | null; timezone?: string; country?: string }
 // Settings saves only the fields it sends; anything left out keeps its value.
 export type ShopUpdate = Partial<ShopInput> & Partial<Omit<ShopReportSettings, 'report_last_sent_on'>> & { daily_target?: number | null }
 export type PaymentMethod = 'bank' | 'jazzcash' | 'easypaisa' | 'cash' | 'card' | 'other'
@@ -98,7 +100,7 @@ export async function setPlatformSettings(changes: Partial<PlatformSettings>) {
   return getPlatformSettings(pool)
 }
 
-const SHOP_SELECT = `SELECT shops.id, shops.name, shops.phone, shops.address, shops.receipt_footer, shops.timezone, shops.created_at,
+const SHOP_SELECT = `SELECT shops.id, shops.name, shops.phone, shops.address, shops.receipt_footer, shops.timezone, shops.country, shops.created_at,
   shops.daily_target, shops.report_enabled, shops.report_time, shops.report_email, shops.report_whatsapp, shops.report_last_sent_on,
   ${SUBSCRIPTION_COLUMNS}
   FROM shops JOIN subscriptions ON subscriptions.shop_id = shops.id`
@@ -111,6 +113,7 @@ function shopFromRow(row: RowDataPacket): LocalShop {
     address: row.address,
     receipt_footer: row.receipt_footer,
     timezone: row.timezone || DEFAULT_TIMEZONE,
+    country: row.country || 'ZZ',
     daily_target: row.daily_target === null || row.daily_target === undefined ? null : Number(row.daily_target),
     report_enabled: Boolean(row.report_enabled),
     report_time: row.report_time ?? '22:00',
@@ -138,9 +141,11 @@ export async function createShopWithTrial(connection: PoolConnection, input: Sho
   const now = new Date()
   // While trials need a card, the shop starts read-only and its trial starts when the card is added.
   const cardRequired = (await getPlatformSettings(connection)).require_card_for_trial
+  // The country sets the defaults: time zone and receipt footer here, currency and the rest elsewhere.
+  const country = getCountry(input.country)
   await connection.query(
-    'INSERT INTO shops (id, name, phone, address, receipt_footer, timezone, referred_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [id, input.name.trim(), input.phone?.trim() || null, input.address?.trim() || null, input.receipt_footer?.trim() || 'Thank you for shopping with us!', input.timezone ?? DEFAULT_TIMEZONE, input.referred_by ?? null, now, now],
+    'INSERT INTO shops (id, name, phone, address, receipt_footer, timezone, country, referred_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, input.name.trim(), input.phone?.trim() || null, input.address?.trim() || null, input.receipt_footer?.trim() || country.receipt.footer, input.timezone ?? country.timezone, country.code, input.referred_by ?? null, now, now],
   )
   await connection.query(
     'INSERT INTO subscriptions (shop_id, plan, status, price, currency, current_period_end, card_required, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -159,6 +164,7 @@ export async function updateShop(shopId: string, input: ShopUpdate) {
   if (input.address !== undefined) columns.address = text(input.address)
   if (input.receipt_footer !== undefined) columns.receipt_footer = text(input.receipt_footer)
   if (input.timezone !== undefined) columns.timezone = input.timezone || DEFAULT_TIMEZONE
+  if (input.country !== undefined) columns.country = getCountry(input.country).code
   if (input.daily_target !== undefined) columns.daily_target = input.daily_target && input.daily_target > 0 ? roundMoney(input.daily_target) : null
   if (input.report_enabled !== undefined) columns.report_enabled = input.report_enabled ? 1 : 0
   if (input.report_time !== undefined) columns.report_time = input.report_time
