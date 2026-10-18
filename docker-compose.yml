@@ -4,11 +4,8 @@
 #   docker compose -p shopos-preprod --env-file .env.preprod up -d --build --wait
 # See .env.production.example for every setting and DEPLOYMENT.md for operations.
 
-x-logging: &logging
-  driver: json-file
-  options:
-    max-size: "10m"
-    max-file: "5"
+# Logs follow the server's Docker settings (/etc/docker/daemon.json): deploy/install.sh sets json-file with
+# rotation; the AWS server sends them to CloudWatch Logs (shopos-infra logging.tf).
 
 x-db-credentials: &db-credentials
   SHOPOS_DB_NAME: ${SHOPOS_DB_NAME:-shopos}
@@ -40,7 +37,6 @@ services:
       retries: 30
       start_period: 30s
     security_opt: ["no-new-privileges:true"]
-    logging: *logging
 
   # S3-compatible file storage: product photos and payment proofs. The app creates its bucket and
   # serves files itself, so the S3 API is not published; the web console is, on this machine only.
@@ -64,7 +60,6 @@ services:
       retries: 10
       start_period: 10s
     security_opt: ["no-new-privileges:true"]
-    logging: *logging
 
   app:
     build:
@@ -143,7 +138,6 @@ services:
       start_period: 20s
     mem_limit: ${SHOPOS_APP_MEMORY:-768m}
     security_opt: ["no-new-privileges:true"]
-    logging: *logging
 
   # HTTPS in front of the app: nginx (latest stable line) with the ShopOS config. docs/nginx.md.
   nginx:
@@ -188,7 +182,6 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
-    logging: *logging
 
   # Let's Encrypt certificates for nginx: issued on start, renewed twice a day when due.
   # Only with COMPOSE_PROFILES=letsencrypt (deploy/install.sh sets it when you choose Let's Encrypt).
@@ -211,7 +204,6 @@ services:
       - letsencrypt:/etc/letsencrypt
       - acme-webroot:/var/www/acme
     security_opt: ["no-new-privileges:true"]
-    logging: *logging
 
   # Local test inbox for environments without a real mail provider (COMPOSE_PROFILES=mailpit).
   # Its web UI is published on this machine only.
@@ -229,7 +221,6 @@ services:
       - mailpit-data:/data
     command: ["--database", "/data/mailpit.db"]
     security_opt: ["no-new-privileges:true"]
-    logging: *logging
 
   backup:
     image: mariadb:11.4
@@ -254,7 +245,6 @@ services:
       # Stored files (photos, payment proofs), archived next to each database dump.
       - minio-data:/minio-data:ro
     security_opt: ["no-new-privileges:true"]
-    logging: *logging
 
 volumes:
   db-data:
