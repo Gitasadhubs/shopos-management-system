@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { Check, LoaderCircle, Store } from 'lucide-react'
@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { CelebrateIllustration, StorefrontIllustration } from '@/components/illustrations'
-import { countryOptions } from '@/lib/countries'
+import { pickerOptions } from '@/lib/countries'
+import { useCountryOptions } from '@/lib/countries/use-country-options'
 
 // Sign-in pages for self-hosted mode (email + password accounts in MariaDB, see lib/local-auth.ts).
 
@@ -160,7 +161,7 @@ export function LocalSignupPage({ requireCard = false, suggestedCountry = 'ZZ' }
   const [form, setForm] = useState({ shop_name: '', full_name: '', phone: '', email: '', password: '', confirm: '' })
   // Pre-filled from the visitor's location; sets the shop's currency, language, tax and time zone.
   const [country, setCountry] = useState(suggestedCountry === 'ZZ' ? '' : suggestedCountry)
-  const options = useMemo(() => countryOptions(), [])
+  const options = pickerOptions(useCountryOptions(), country)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [created, setCreated] = useState('')

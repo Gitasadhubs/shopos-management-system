@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { CalendarCheck, CreditCard, Play, Store, Target, UserRound, Users, Volume2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -10,7 +10,8 @@ import { Label } from '@/components/ui/label'
 import { useAuth } from '@/components/auth/auth-provider'
 import { SettingsIllustration } from '@/components/illustrations'
 import { api, money, Notice, PageHeader, SkeletonRows, useAction, useApi } from '@/components/page-kit'
-import { countryOptions } from '@/lib/countries'
+import { pickerOptions } from '@/lib/countries'
+import { useCountryOptions } from '@/lib/countries/use-country-options'
 import { playSound, setSoundEnabled, useSoundEnabled, type SoundName } from '@/lib/sounds'
 
 type Shop = { id: string; name: string; phone: string | null; address: string | null; receipt_footer: string | null; timezone: string; country: string; daily_target: number | null; report_enabled: boolean; report_time: string; report_email: string | null; report_whatsapp: string | null }
@@ -74,7 +75,7 @@ export default function SettingsPage() {
   const action = useAction()
   const sound = useSoundEnabled()
   const [form, setForm] = useState({ name: '', phone: '', address: '', receipt_footer: '', timezone: 'Asia/Karachi', country: '' })
-  const countries = useMemo(() => countryOptions(), [])
+  const countryList = useCountryOptions()
 
   useEffect(() => {
     if (shop.data) setForm({ name: shop.data.name, phone: shop.data.phone ?? '', address: shop.data.address ?? '', receipt_footer: shop.data.receipt_footer ?? '', timezone: shop.data.timezone, country: shop.data.country === 'ZZ' ? '' : shop.data.country })
@@ -108,7 +109,7 @@ export default function SettingsPage() {
               <fieldset disabled={!owner || action.busy} className="contents">
                 <div className="sm:col-span-2"><Label htmlFor="shop-name">Shop name</Label><Input id="shop-name" className="mt-1.5" required maxLength={120} value={form.name} onChange={set('name')} /></div>
                 <div><Label htmlFor="shop-phone">Phone</Label><Input id="shop-phone" className="mt-1.5" type="tel" maxLength={40} value={form.phone} onChange={set('phone')} /></div>
-                <div><Label htmlFor="shop-country">Country</Label><select id="shop-country" className="mt-1.5 h-10 w-full rounded-lg border border-input bg-white px-3 text-sm" value={form.country} onChange={set('country')}><option value="" disabled>Choose your country</option>{countries.map((option) => <option key={option.code} value={option.code}>{option.name}</option>)}</select></div>
+                <div><Label htmlFor="shop-country">Country</Label><select id="shop-country" className="mt-1.5 h-10 w-full rounded-lg border border-input bg-white px-3 text-sm" value={form.country} onChange={set('country')}><option value="" disabled>Choose your country</option>{pickerOptions(countryList, form.country).map((option) => <option key={option.code} value={option.code}>{option.name}</option>)}</select></div>
                 <div><Label htmlFor="shop-timezone">Time zone</Label><select id="shop-timezone" className="mt-1.5 h-10 w-full rounded-lg border border-input bg-white px-3 text-sm" value={form.timezone} onChange={set('timezone')}>{zones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}</select></div>
                 <div className="sm:col-span-2"><Label htmlFor="shop-address">Address</Label><Input id="shop-address" className="mt-1.5" maxLength={300} value={form.address} onChange={set('address')} /></div>
                 <div className="sm:col-span-2"><Label htmlFor="shop-footer">Receipt message</Label><Input id="shop-footer" className="mt-1.5" maxLength={300} placeholder="Thank you for shopping with us!" value={form.receipt_footer} onChange={set('receipt_footer')} /></div>

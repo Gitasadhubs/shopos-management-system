@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The `shopos` command on a server set up by deploy/install.sh (/usr/local/bin/shopos runs this file).
-#   shopos status | logs [service] | backup | update | restore [file] | doctor [--quiet] | env | reload | help
+#   shopos status | logs [service] | backup | update | restore [file] | restore-test | doctor [--quiet] | env | reload | help
 set -Eeuo pipefail
 
 # shellcheck disable=SC1091
@@ -80,6 +80,55 @@ cmd_backup() {
   say "Backup: $after ($size)"
 }
 
+# Restores the newest backup into a throwaway database and starts the given app image on it, which runs
+# that version's migrations. Proves the backup restores and the migrations work on real data, without
+# touching production. Used before every update, and weekly as the restore drill.
+rehearse() {
+  local image=$1 dump name=shopos-rehearsal pass tries=0 ok=1
+  dump=$(newest_backup)
+  [[ -n $dump ]] || { warn 'No backup to rehearse on yet.'; return 0; }
+  pass=$(openssl rand -hex 16)
+  local cleanup="docker rm -f $name-app $name-db >/dev/null 2>&1; docker network rm $name >/dev/null 2>&1"
+  eval "$cleanup"
+  docker network create "$name" >/dev/null
+  docker run -d --name "$name-db" --network "$name" --memory 384m \
+    -e MARIADB_ROOT_PASSWORD="$pass" -e MARIADB_DATABASE=shopos -e MARIADB_USER=shopos -e MARIADB_PASSWORD="$pass" \
+    mariadb:11.4 --innodb-buffer-pool-size=64M >/dev/null
+  until docker exec "$name-db" healthcheck.sh --connect --innodb_initialized >/dev/null 2>&1; do
+    tries=$((tries + 1)); ((tries < 60)) || { warn 'The rehearsal database did not start.'; eval "$cleanup"; return 1; }
+    sleep 2
+  done
+  if ! gunzip -c "$dump" | docker exec -i "$name-db" sh -c "exec mariadb -uroot -p\"$pass\" shopos"; then
+    warn "$(basename "$dump") did not restore."; eval "$cleanup"; return 1
+  fi
+  docker run -d --name "$name-app" --network "$name" --memory 512m \
+    -e SHOPOS_STORAGE=mariadb -e SHOPOS_DB_HOST="$name-db" -e SHOPOS_DB_PORT=3306 -e SHOPOS_DB_NAME=shopos \
+    -e SHOPOS_DB_USER=shopos -e SHOPOS_DB_PASSWORD="$pass" -e SHOPOS_PUBLIC_URL=http://localhost \
+    -e SHOPOS_SMTP_HOST=127.0.0.1 -e SHOPOS_MAIL_FROM='Rehearsal <rehearsal@localhost>' "$image" >/dev/null
+  tries=0
+  # The first health check opens the database, which runs the migrations.
+  until docker exec "$name-app" node -e "fetch('http://127.0.0.1:3000/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))" >/dev/null 2>&1; do
+    tries=$((tries + 1)); ((tries < 40)) || { ok=0; break; }
+    sleep 3
+  done
+  if ((ok)); then
+    local version shops
+    version=$(docker exec "$name-db" mariadb -N -uroot -p"$pass" shopos -e 'SELECT MAX(version) FROM schema_migrations')
+    shops=$(docker exec "$name-db" mariadb -N -uroot -p"$pass" shopos -e 'SELECT COUNT(*) FROM shops')
+    say "Rehearsal on $(basename "$dump"): healthy, schema version $version, $shops shops."
+  else
+    warn "The app did not come up healthy on a copy of $(basename "$dump"):"
+    docker logs --tail 30 "$name-app" 2>&1 | sed 's/^/    /' >&2
+  fi
+  eval "$cleanup"
+  ((ok))
+}
+
+# Weekly restore drill (cron): the newest backup restores and the running version works on it.
+cmd_restore_test() {
+  rehearse "shopos:$(env_get SHOPOS_VERSION)"
+}
+
 cmd_update() {
   [[ -z $(git -C "$DIR" status --porcelain --untracked-files=no) ]] || die "$DIR has local changes; commit or discard them first (git -C $DIR status)."
   local previous current
@@ -93,8 +142,21 @@ cmd_update() {
   if [[ $current == "$previous" ]]; then say "Already at the latest $BRANCH ($(git -C "$DIR" log -1 --format='%h %s'))."; [[ ${1-} == --force ]] || return 0; fi
   git -C "$DIR" log --oneline "$previous..$current" | sed 's/^/    /' || true
   env_set SHOPOS_VERSION "$(git -C "$DIR" rev-parse --short HEAD)"
-  say 'Building and restarting'
-  if compose build --pull && compose up -d --remove-orphans --wait --wait-timeout 600 && wait_healthy; then
+  say 'Building'
+  if ! compose build --pull; then
+    warn "The new version did not build. Production was not touched; going back to ${previous:0:7}."
+    git -C "$DIR" checkout -q "$previous"; env_set SHOPOS_VERSION "${previous:0:7}"
+    exit 1
+  fi
+  # Staging for the migrations: the new version runs them on a copy of the backup just taken first.
+  say 'Rehearsing the new version on a copy of the data'
+  if ! rehearse "shopos:$(env_get SHOPOS_VERSION)"; then
+    warn "The rehearsal failed, so production was not touched; going back to ${previous:0:7}."
+    git -C "$DIR" checkout -q "$previous"; env_set SHOPOS_VERSION "${previous:0:7}"
+    exit 1
+  fi
+  say 'Restarting on the new version'
+  if compose up -d --remove-orphans --wait --wait-timeout 600 && wait_healthy; then
     docker image prune -f >/dev/null
     docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
     say "Updated to $(git -C "$DIR" log -1 --format='%h %s')"
@@ -211,21 +273,28 @@ shopos logs [service]    follow logs: app (default), nginx, certbot, db, minio, 
 shopos backup            take a backup now (database and stored files)
 shopos update [--force]  back up, pull the latest code, rebuild, check; roll back if unhealthy
 shopos restore [file]    restore a backup (asks first, backs up the current data)
+shopos restore-test      restore the newest backup into a throwaway copy and check the app works on it
 shopos doctor [--quiet]  check health, disk, backups, certificate, email, firewall
 shopos env               edit the settings file, then apply it
 shopos reload            apply changed nginx site files (deploy/nginx/sites) without downtime
 EOF
 }
 
-case ${1-help} in
-  status) cmd_status ;;
-  logs) cmd_logs "${2-}" ;;
-  backup) cmd_backup ;;
-  update) cmd_update "${2-}" ;;
-  restore) cmd_restore "${2-}" ;;
-  doctor) cmd_doctor "${2-}" ;;
-  env) cmd_env ;;
-  reload) cmd_reload ;;
-  help|-h|--help) usage ;;
-  *) usage >&2; exit 2 ;;
-esac
+# In braces and ending in exit: bash reads the whole block before running it, so `shopos update`
+# replacing this file mid-run (git pull) cannot make bash read on into the new version.
+{
+  case ${1-help} in
+    status) cmd_status ;;
+    logs) cmd_logs "${2-}" ;;
+    backup) cmd_backup ;;
+    update) cmd_update "${2-}" ;;
+    restore) cmd_restore "${2-}" ;;
+    restore-test) cmd_restore_test ;;
+    doctor) cmd_doctor "${2-}" ;;
+    env) cmd_env ;;
+    reload) cmd_reload ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  exit
+}

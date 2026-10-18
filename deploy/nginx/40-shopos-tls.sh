@@ -20,6 +20,16 @@ tls=${SHOPOS_TLS:-internal}
   echo 'real_ip_recursive on;'
 } > "$dir/realip.conf"
 
+# --- content security policy -----------------------------------------------------------------------
+# What pages may load: ShopOS itself, plus Paddle (card checkout). SHOPOS_CSP_MODE: report (default:
+# violations are only reported to /api/csp-report), enforce, or off.
+csp="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.paddle.com https://*.paddle.com; style-src 'self' 'unsafe-inline' https://cdn.paddle.com; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://*.paddle.com; frame-src https://*.paddle.com; worker-src 'self' blob:; manifest-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; report-uri /api/csp-report"
+case ${SHOPOS_CSP_MODE:-report} in
+  enforce) echo "add_header Content-Security-Policy \"$csp\" always;" ;;
+  off) : ;;
+  *) echo "add_header Content-Security-Policy-Report-Only \"$csp\" always;" ;;
+esac > "$dir/csp.conf"
+
 # --- certificate --------------------------------------------------------------------------------
 self_signed() {
   # Kept in a volume, so the certificate (and any device that trusts it) survives restarts.

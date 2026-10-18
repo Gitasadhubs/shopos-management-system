@@ -45,3 +45,11 @@ export function countryOptions(displayLocale = 'en') {
   try { names = new Intl.DisplayNames([displayLocale, 'en'], { type: 'region' }) } catch { names = null }
   return ISO_CODES.map((code) => ({ code, name: BY_CODE.get(code)?.name ?? names?.of(code) ?? code })).sort((a, b) => a.name.localeCompare(b.name))
 }
+
+// The country list for a picker, built in the browser only: Node and browsers ship different country-name
+// data, so a list rendered on the server would not match after hydration. Until then the picker shows
+// just the chosen country.
+export function pickerOptions(list: Array<{ code: string; name: string }> | null, selected: string) {
+  if (list) return list
+  return selected ? [{ code: selected, name: BY_CODE.get(selected)?.name ?? selected }] : []
+}

@@ -1,0 +1,33 @@
+# Uptime check from outside AWS (the server also reports its own health to CloudWatch). Every 15 minutes
+# GitHub checks the live app, the demo and the website; a failed run emails the repository owner.
+name: Uptime
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Live sites answer
+        run: |
+          set -u
+          failed=0
+          check() {
+            local url=$1 expect=$2 body
+            for attempt in 1 2 3; do
+              body=$(curl -fsS --max-time 20 "$url" 2>/dev/null) && grep -q "$expect" <<<"$body" && { echo "ok    $url"; return 0; }
+              sleep 10
+            done
+            echo "::error::DOWN  $url"; failed=1
+          }
+          check https://app.getshopos.online/api/health '"ok":true'
+          check https://demo.getshopos.online/api/health '"ok":true'
+          check https://getshopos.online/ 'ShopOS'
+          exit $failed
