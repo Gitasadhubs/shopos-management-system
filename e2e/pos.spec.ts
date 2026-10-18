@@ -286,7 +286,8 @@ test('keeps selling offline and sends the sale when the connection is back', asy
   await context.setOffline(false)
   await expect(page.getByText(/Waiting to be sent/)).toHaveCount(0, { timeout: 30_000 })
   await expect(page.getByText(/waiting$/)).toHaveCount(0)
-  expect((await getProduct(request, product.name))?.stock_quantity).toBe(3)
+  // The queue can clear a moment before the server has committed the sale.
+  await expect.poll(async () => (await getProduct(request, product.name))?.stock_quantity, { timeout: 15_000 }).toBe(3)
   const sales = await salesFor(request, product.name)
   expect(sales).toHaveLength(1)
   expect(Number(sales[0].total)).toBe(160)
