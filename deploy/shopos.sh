@@ -102,7 +102,7 @@ rehearse() {
     warn "$(basename "$dump") did not restore."; eval "$cleanup"; return 1
   fi
   docker run -d --name "$name-app" --network "$name" --memory 512m \
-    -e SHOPOS_STORAGE=mariadb -e SHOPOS_DB_HOST="$name-db" -e SHOPOS_DB_PORT=3306 -e SHOPOS_DB_NAME=shopos \
+    -e HOSTNAME=0.0.0.0 -e PORT=3000 -e SHOPOS_STORAGE=mariadb -e SHOPOS_DB_HOST="$name-db" -e SHOPOS_DB_PORT=3306 -e SHOPOS_DB_NAME=shopos \
     -e SHOPOS_DB_USER=shopos -e SHOPOS_DB_PASSWORD="$pass" -e SHOPOS_PUBLIC_URL=http://localhost \
     -e SHOPOS_SMTP_HOST=127.0.0.1 -e SHOPOS_MAIL_FROM='Rehearsal <rehearsal@localhost>' "$image" >/dev/null
   tries=0
