@@ -29,6 +29,8 @@
   "banner.trialEnds": "Votre essai gratuit se termine dans {days} jours.",
   "banner.trialEndsOne": "Votre essai gratuit se termine dans 1 jour.",
   "banner.seePlans": "Voir les offres",
+  "banner.paymentDue": "Le paiement de votre offre est dû avant le {date}.",
+  "banner.payNow": "Payer maintenant",
 
   "start.title": "Préparez votre boutique",
   "start.progress": "{done} sur {total} terminés",

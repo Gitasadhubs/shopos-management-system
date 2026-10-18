@@ -5,7 +5,7 @@ import { addCommissionForPayment } from '@/lib/affiliate-core'
 import { getCountry } from '@/lib/countries'
 import { fileUrl } from '@/lib/file-keys'
 import { addTo, formatMoney, isCurrency, type Currency, type MoneyTotals } from '@/lib/money'
-import { isInterval, monthlyValue, planName, PLANS, type BillingInterval } from '@/lib/plans'
+import { isInterval, monthlyValue, planName, PLANS, type BillingInterval, type CardPlanId } from '@/lib/plans'
 import { addDays, dayKey, dayStart, DEFAULT_TIMEZONE } from '@/lib/time'
 
 // Shops and their subscriptions. Shop owners read their own; platform admins (role 'admin') manage all.
@@ -19,6 +19,8 @@ export type ShopSubscription = {
   provider: 'manual' | 'paddle'; cancel_at_period_end: boolean; past_due: boolean
   // The trial waits for a card (signed up while trials needed one): read-only until it is added.
   needs_card: boolean
+  // "Pay later" (payLater): the plan runs until this date and needs a payment by then. null: nothing owed.
+  payment_due: string | null
 }
 // report_*: the automatic day-end report (lib/day-end.ts).
 export type ShopReportSettings = { report_enabled: boolean; report_time: string; report_email: string | null; report_whatsapp: string | null; report_last_sent_on: string | null }
@@ -50,7 +52,7 @@ export function subscriptionState(status: string, periodEnd: Date | string, now 
 export const SUBSCRIPTION_COLUMNS = `subscriptions.plan AS sub_plan, subscriptions.status AS sub_status, subscriptions.price AS sub_price,
   subscriptions.currency AS sub_currency, subscriptions.billing_interval AS sub_interval, subscriptions.provider AS sub_provider,
   subscriptions.provider_status AS sub_provider_status, subscriptions.cancel_at_period_end AS sub_cancel, subscriptions.current_period_end AS sub_period_end,
-  subscriptions.card_required AS sub_card_required`
+  subscriptions.card_required AS sub_card_required, subscriptions.payment_due_at AS sub_payment_due`
 
 export function subscriptionFromRow(row: RowDataPacket): ShopSubscription {
   const provider = row.sub_provider === 'paddle' ? 'paddle' : 'manual'
@@ -78,6 +80,7 @@ export function subscriptionFromRow(row: RowDataPacket): ShopSubscription {
     cancel_at_period_end: cancel,
     past_due: provider === 'paddle' && row.sub_provider_status === 'past_due',
     needs_card: needsCard,
+    payment_due: row.sub_payment_due ? iso(row.sub_payment_due) : null,
   }
 }
 
@@ -360,7 +363,7 @@ export async function getShopForAdmin(shopId: string) {
 }
 
 export async function lockSubscription(connection: PoolConnection, shopId: string) {
-  const [rows] = await connection.query<RowDataPacket[]>('SELECT status, current_period_end, currency, provider, cancel_at_period_end FROM subscriptions WHERE shop_id = ? FOR UPDATE', [shopId])
+  const [rows] = await connection.query<RowDataPacket[]>('SELECT status, current_period_end, currency, provider, cancel_at_period_end, payment_due_at FROM subscriptions WHERE shop_id = ? FOR UPDATE', [shopId])
   if (!rows[0]) throw new LocalDataError('Shop not found.', 404)
   return {
     status: rows[0].status as string,
@@ -368,6 +371,7 @@ export async function lockSubscription(connection: PoolConnection, shopId: strin
     currency: (isCurrency(rows[0].currency) ? rows[0].currency : 'PKR') as Currency,
     provider: rows[0].provider as string,
     cancel: Boolean(rows[0].cancel_at_period_end),
+    paymentDue: rows[0].payment_due_at ? new Date(rows[0].payment_due_at) : null,
   }
 }
 
@@ -413,7 +417,34 @@ export async function insertPayment(
     [id, shopId, amount, payment.currency, payment.method, payment.reference, payment.providerRef, payment.months, payment.periodEnd, payment.actorId, now],
   )
   await addCommissionForPayment(connection, shopId, { id, amount, currency: payment.currency, months: payment.months }, now)
+  // Whatever "pay later" left owing is settled by any payment.
+  await connection.query('UPDATE subscriptions SET payment_due_at = NULL WHERE shop_id = ?', [shopId])
   return id
+}
+
+// How long "pay later" gives before the shop must have paid (then it is read-only like an ended trial).
+export const PAY_LATER_DAYS = 7
+
+// "Pay later": the owner starts a card plan now without paying yet. The plan is active until the later
+// of PAY_LATER_DAYS from now and the end of the time it already has (a trial keeps its days), and that
+// date is when payment is due. Once per payment: it cannot be chosen again while something is owed.
+export async function payLater(actorId: string, shopId: string, plan: CardPlanId, interval: BillingInterval) {
+  return withTransaction(async (connection) => {
+    const current = await lockSubscription(connection, shopId)
+    if (current.paymentDue) throw new LocalDataError(`A payment is already due (${formatDay(current.paymentDue)}). Pay it to change your plan.`, 409, 'payment_due')
+    if (current.status === 'suspended') throw new LocalDataError('This shop is suspended. Message us to sort it out.', 409)
+    if (current.provider === 'paddle' && !current.cancel) throw new LocalDataError('This shop already pays by card.', 409)
+    const price = PLANS[plan].prices[interval]
+    if (!price) throw new LocalDataError('This plan is not available.', 400)
+    const now = new Date()
+    const due = new Date(Math.max(current.periodEnd.getTime(), now.getTime() + PAY_LATER_DAYS * DAY))
+    await connection.query(
+      "UPDATE subscriptions SET plan = ?, billing_interval = ?, price = ?, currency = ?, provider = 'manual', status = 'active', current_period_end = ?, payment_due_at = ?, updated_at = ? WHERE shop_id = ?",
+      [plan, interval, price, PLANS[plan].currency, due, due, now, shopId],
+    )
+    await logEvent(connection, shopId, 'pay_later', `${PLANS[plan].name} · ${formatMoney(price, PLANS[plan].currency)} per ${interval} · due ${formatDay(due)}`, actorId)
+    return { plan, interval, payment_due: iso(due) }
+  })
 }
 
 export type SubscriptionAction =

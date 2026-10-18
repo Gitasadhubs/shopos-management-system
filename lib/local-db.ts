@@ -636,6 +636,11 @@ const migrations: string[][] = [
       ADD COLUMN IF NOT EXISTS currency CHAR(3) NOT NULL DEFAULT 'PKR' AFTER country,
       ADD COLUMN IF NOT EXISTS language VARCHAR(5) NOT NULL DEFAULT 'en' AFTER currency`,
   ],
+  [
+    // 12: "Pay later": the owner starts a plan now and pays by payment_due_at (NULL: nothing owed).
+    // Any recorded payment clears it. Rollback: deploy/rollback/0012-pay-later.sql.
+    `ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS payment_due_at DATETIME(3) NULL AFTER card_required`,
+  ],
 ]
 
 // Survives Next dev hot reloads, which would otherwise open a new pool per edit.

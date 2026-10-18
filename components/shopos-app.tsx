@@ -27,6 +27,7 @@ import { receiptLabel, ReturnBadge } from '@/components/receipt'
 import { EmptyState, ReceiptIllustration, StorefrontIllustration } from '@/components/illustrations'
 import { Avatar, money, StatCard } from '@/components/page-kit'
 import { t } from '@/lib/i18n'
+import { formatDate } from '@/lib/format'
 
 type NavItem = { href: string; label: string; permission: Permission; icon: typeof LayoutDashboard; group: 'Workspace' | 'Manage'; selfHostedOnly?: boolean }
 
@@ -48,7 +49,7 @@ const navigation: NavItem[] = [
   { href: '/account', label: 'nav.account', permission: 'dashboard', icon: UserRound, group: 'Manage', selfHostedOnly: true },
 ]
 
-type Subscription = { state: 'trialing' | 'active' | 'suspended' | 'expired'; days_left: number; current_period_end: string; can_write: boolean; needs_card?: boolean }
+type Subscription = { state: 'trialing' | 'active' | 'suspended' | 'expired'; days_left: number; current_period_end: string; can_write: boolean; needs_card?: boolean; payment_due?: string | null }
 
 type SaleRow = {
   id: string
@@ -196,6 +197,7 @@ function Header({ onMenu }: { onMenu: () => void }) {
       <span>{t(subscription.needs_card ? 'banner.needsCard' : subscription.state === 'suspended' ? 'banner.suspended' : 'banner.ended')}</span>
       {owner ? <Link href="/billing" className="font-semibold underline underline-offset-2">{t(subscription.needs_card ? 'banner.addCard' : 'banner.renew')}</Link> : <span>{t(subscription.needs_card ? 'banner.askOwnerCard' : 'banner.askOwnerRenew')}</span>}
     </div>}
+    {subscription?.payment_due && subscription.can_write && owner && <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">{t('banner.paymentDue', { date: formatDate(subscription.payment_due) })} <Link href="/billing" className="font-semibold underline underline-offset-2">{t('banner.payNow')}</Link></div>}
     {subscription?.state === 'trialing' && subscription.days_left <= 3 && owner && <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-sm text-amber-900">{subscription.days_left === 1 ? t('banner.trialEndsOne') : t('banner.trialEnds', { days: subscription.days_left })} <Link href="/billing" className="font-semibold underline underline-offset-2">{t('banner.seePlans')}</Link></div>}
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b bg-white/90 px-4 backdrop-blur sm:px-8">
       <button type="button" aria-label="Open navigation" className="lg:hidden" onClick={onMenu}><Menu /></button>

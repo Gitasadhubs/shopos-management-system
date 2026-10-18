@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic'
 
 const input = 'mt-1.5 h-10 w-full rounded-lg border border-stone-200 bg-white px-3 text-sm outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10'
 const EVENT_LABELS: Record<string, string> = {
-  trial_started: 'Trial started', payment: 'Payment recorded', extended: 'Days added', suspended: 'Suspended', resumed: 'Resumed', expired: 'Ended', price_changed: 'Plan changed',
+  trial_started: 'Trial started', payment: 'Payment recorded', extended: 'Days added', suspended: 'Suspended', resumed: 'Resumed', expired: 'Ended', price_changed: 'Plan changed', pay_later: 'Pay later (payment due)',
   proof_sent: 'Payment proof sent', card_trial: 'Card trial started', card_cancelled: 'Card plan cancelled', card_resumed: 'Card plan resumed', card_past_due: 'Card payment failed',
 }
 

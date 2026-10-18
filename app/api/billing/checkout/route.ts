@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { withBillingOwner } from '@/lib/billing-route'
 import { paddleLink } from '@/lib/local-billing'
 import { jsonResponse } from '@/lib/local-session'
-import { paddleCheckoutConfig, priceIdFor } from '@/lib/paddle'
+import { CARD_SOON_MESSAGE, cardCheckoutOpen, paddleCheckoutConfig, priceIdFor } from '@/lib/paddle'
 
 export const runtime = 'nodejs'
 
@@ -14,6 +14,7 @@ export async function POST(request: Request) {
   return withBillingOwner(request, 'Unable to start the card payment.', async ({ user, shop }) => {
     const parsed = schema.safeParse(await request.json().catch(() => null))
     if (!parsed.success) return jsonResponse(null, 'Choose a plan.', 400)
+    if (!cardCheckoutOpen()) return jsonResponse(null, CARD_SOON_MESSAGE, 503, 'card_soon')
     const config = paddleCheckoutConfig()
     // A shop waiting for its card starts the 14-day trial: the trial price charges nothing today.
     const trial = shop.subscription.needs_card

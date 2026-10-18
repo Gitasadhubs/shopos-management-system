@@ -29,6 +29,8 @@
   "banner.trialEnds": "آپ کا مفت ٹرائل {days} دن میں ختم ہوگا۔",
   "banner.trialEndsOne": "آپ کا مفت ٹرائل 1 دن میں ختم ہوگا۔",
   "banner.seePlans": "پلان دیکھیں",
+  "banner.paymentDue": "آپ کے پلان کی ادائیگی {date} تک واجب ہے۔",
+  "banner.payNow": "ابھی ادا کریں",
 
   "start.title": "اپنی دکان تیار کریں",
   "start.progress": "{total} میں سے {done} مکمل",

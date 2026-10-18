@@ -36,6 +36,11 @@ export function planForPrice(priceId: string | null | undefined): { plan: CardPl
 }
 
 // Card checkout is offered only once the browser token, the webhook secret and at least one price are set.
+// SHOPOS_PADDLE_CHECKOUT=soon: the card plans show, but checkout does not open yet (an install still on
+// Paddle's sandbox before its live account is approved). Owners use "pay later" meanwhile.
+export const CARD_SOON_MESSAGE = 'Card payments open in a few days. Choose "Pay later" to start your plan now and pay within 7 days.'
+export const cardCheckoutOpen = () => env('SHOPOS_PADDLE_CHECKOUT') !== 'soon'
+
 export function paddleCheckoutConfig() {
   const token = env('SHOPOS_PADDLE_CLIENT_TOKEN')
   if (!token || !env('SHOPOS_PADDLE_WEBHOOK_SECRET')) return null

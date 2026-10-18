@@ -112,6 +112,8 @@ services:
       # Card payments through Paddle (lib/paddle.ts, DEPLOYMENT.md). Card plans show on Billing once the
       # client token, webhook secret and a price are set; the API key adds plan changes and the portal.
       SHOPOS_PADDLE_ENV: ${SHOPOS_PADDLE_ENV:-sandbox}
+      # soon: card plans show but checkout waits for the live Paddle account (owners use "pay later").
+      SHOPOS_PADDLE_CHECKOUT: ${SHOPOS_PADDLE_CHECKOUT:-open}
       SHOPOS_PADDLE_CLIENT_TOKEN: ${SHOPOS_PADDLE_CLIENT_TOKEN:-}
       SHOPOS_PADDLE_API_KEY: ${SHOPOS_PADDLE_API_KEY:-}
       SHOPOS_PADDLE_WEBHOOK_SECRET: ${SHOPOS_PADDLE_WEBHOOK_SECRET:-}

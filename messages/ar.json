@@ -29,6 +29,8 @@
   "banner.trialEnds": "تنتهي تجربتك المجانية خلال {days} أيام.",
   "banner.trialEndsOne": "تنتهي تجربتك المجانية خلال يوم واحد.",
   "banner.seePlans": "عرض الخطط",
+  "banner.paymentDue": "دفعة خطتك مستحقة بحلول {date}.",
+  "banner.payNow": "ادفع الآن",
 
   "start.title": "جهّز متجرك",
   "start.progress": "تم {done} من {total}",

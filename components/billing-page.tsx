@@ -20,8 +20,11 @@ type Proof = { id: string; url: string; content_type: string; note: string | nul
 type Subscription = {
   plan: string; plan_name: string; state: 'trialing' | 'active' | 'suspended' | 'expired'; price: number; currency: Currency; interval: BillingInterval
   current_period_end: string; days_left: number; provider: 'manual' | 'paddle'; cancel_at_period_end: boolean; past_due: boolean; needs_card: boolean
+  payment_due: string | null
 }
 type CardInfo = {
+  // false: card checkout is not open yet (SHOPOS_PADDLE_CHECKOUT=soon); "pay later" covers it.
+  open: boolean
   environment: 'sandbox' | 'production'
   client_token: string
   available: Array<{ plan: CardPlanId; interval: BillingInterval }>
@@ -34,6 +37,7 @@ type Billing = {
   payment_details: { bank_name: string; account_title: string; account_number: string; iban: string; wallet: string; whatsapp: string }
   plans: Plan[]
   card: CardInfo | null
+  pay_later_days: number
 }
 type Checkout = { environment: 'sandbox' | 'production'; client_token: string; price_id: string; email: string; custom_data: Record<string, string> }
 
@@ -153,6 +157,8 @@ function CardPlans({ data, reload }: { data: Billing; reload: () => Promise<void
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  // The plan whose card button was pressed while card checkout is not open yet.
+  const [soonFor, setSoonFor] = useState<CardPlanId | null>(null)
   // After paying or changing plan, Paddle's webhook updates the shop within seconds: reload until it shows.
   const [waitingFor, setWaitingFor] = useState<null | ((billing: Billing) => boolean)>(null)
 
@@ -180,9 +186,10 @@ function CardPlans({ data, reload }: { data: Billing; reload: () => Promise<void
   }, [waitingFor])
 
   async function pay(plan: CardPlanId) {
-    setBusy(plan)
     setError('')
     setNotice('')
+    if (!card.open) { setSoonFor(plan); return }
+    setBusy(plan)
     try {
       const checkout = await api<Checkout>('/api/billing/checkout', { method: 'POST', body: { plan, interval: cycle } })
       const paddle = await loadPaddle(checkout.environment, checkout.client_token)
@@ -204,6 +211,28 @@ function CardPlans({ data, reload }: { data: Billing; reload: () => Promise<void
       setBusy('')
     }
   }
+
+  // "Pay later": the plan starts now, payment is due in pay_later_days (by card or transfer).
+  async function payLater(plan: CardPlanId) {
+    const target = PLANS[plan]
+    if (!window.confirm(`Start ${target.name} now (${formatMoney(target.prices[cycle] ?? 0, 'USD')}/${per(cycle)}) and pay within ${data.pay_later_days} days?`)) return
+    setBusy(`later-${plan}`)
+    setError('')
+    setNotice('')
+    try {
+      const result = await api<{ payment_due: string }>('/api/billing/pay-later', { method: 'POST', body: { plan, interval: cycle } })
+      setSoonFor(null)
+      setNotice(`${target.name} is active. Payment is due by ${shortDate(result.payment_due)}.`)
+      playSound('success')
+      await reload()
+    } catch (laterError) {
+      playSound('error')
+      setError(errorMessage(laterError, 'Could not start the plan.'))
+    } finally {
+      setBusy('')
+    }
+  }
+  const canPayLater = !current?.live && !sub.payment_due && !sub.needs_card && sub.state !== 'suspended'
 
   async function change(plan: CardPlanId) {
     const target = PLANS[plan]
@@ -273,7 +302,7 @@ function CardPlans({ data, reload }: { data: Billing; reload: () => Promise<void
         </div>}
       </CardHeader>
       <CardContent className="grid gap-4">
-        {card.environment === 'sandbox' && <p className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">Test mode: no real money is taken. Use card 4242 4242 4242 4242, any future date, any CVC.</p>}
+        {card.open && card.environment === 'sandbox' && <p className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">Test mode: no real money is taken. Use card 4242 4242 4242 4242, any future date, any CVC.</p>}
         {sub.cancel_at_period_end && current?.cancel_scheduled && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           <AlertTriangle className="size-4 shrink-0" /><span className="flex-1">Your card plan is cancelled. It stays active until {shortDate(sub.current_period_end)} and will not renew.</span>
           <Button size="sm" variant="outline" disabled={busy === 'resume'} onClick={() => void resume()}>{busy === 'resume' && <LoaderCircle className="mr-2 size-4 animate-spin" />}Keep my plan</Button>
@@ -281,6 +310,13 @@ function CardPlans({ data, reload }: { data: Billing; reload: () => Promise<void
         {sub.past_due && <div className="flex flex-wrap items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
           <AlertTriangle className="size-4 shrink-0" /><span className="flex-1">Your last card payment did not go through. Paddle will try again; update your card to keep the shop running.</span>
           <Button size="sm" variant="outline" disabled={busy === 'update_payment'} onClick={() => void portal('update_payment')}>Update card</Button>
+        </div>}
+        {sub.payment_due && <div role="note" className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <AlertTriangle className="size-4 shrink-0" /><span className="flex-1">Payment due by {shortDate(sub.payment_due)}: {sub.plan_name}, {formatMoney(sub.price, sub.currency)} per {per(sub.interval)}. Pay by card{card.open ? '' : ' (opening soon)'} or by transfer below; unpaid, the shop turns read-only on that date.</span>
+        </div>}
+        {soonFor && <div role="note" className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
+          <CreditCard className="size-4 shrink-0" /><span className="flex-1">Card payments open in a few days. {canPayLater ? `Choose "Pay later" to start ${PLANS[soonFor].name} now and pay within ${data.pay_later_days} days.` : 'You can also pay by transfer below.'}</span>
+          {canPayLater && <Button size="sm" disabled={Boolean(busy)} onClick={() => void payLater(soonFor)}>{busy === `later-${soonFor}` && <LoaderCircle className="mr-2 size-4 animate-spin" />}Pay later</Button>}
         </div>}
         <div className="grid gap-4 md:grid-cols-2">
           {data.plans.filter((plan) => plan.id !== 'basic').map((plan) => {
@@ -296,6 +332,7 @@ function CardPlans({ data, reload }: { data: Billing; reload: () => Promise<void
                 : <Button className="mt-4 bg-emerald-600 hover:bg-emerald-700" disabled={!available(id) || Boolean(busy)} onClick={() => void (current?.live ? change(id) : pay(id))}>
                   {busy === id && <LoaderCircle className="mr-2 size-4 animate-spin" />}{!available(id) ? 'Not available yet' : current?.live ? `Switch to ${plan.name}` : sub.needs_card ? `Start free trial: ${plan.name}` : sub.state === 'trialing' ? `Start ${plan.name}` : `Pay for ${plan.name}`}
                 </Button>}
+              {!isCurrent && canPayLater && price !== undefined && <Button className="mt-2" variant="outline" disabled={Boolean(busy)} onClick={() => void payLater(id)}>{busy === `later-${id}` && <LoaderCircle className="mr-2 size-4 animate-spin" />}Pay later · {data.pay_later_days} days</Button>}
             </div>
           })}
         </div>
@@ -322,7 +359,7 @@ export default function BillingPage() {
   const cardLive = Boolean(data.card?.subscription?.live)
   const message = `Assalam-o-Alaikum! Payment for ShopOS — shop "${data.shop.name}" (ID ${data.shop.id.slice(0, 8)}). Screenshot attached.`
   const renewing = sub.provider === 'paddle' && !sub.cancel_at_period_end
-  const headline = sub.needs_card ? 'Add a card to start your 14-day free trial' : sub.state === 'trialing' ? `${sub.days_left} day${sub.days_left === 1 ? '' : 's'} left in your free trial`
+  const headline = sub.payment_due ? `Payment due by ${shortDate(sub.payment_due)}` : sub.needs_card ? 'Add a card to start your 14-day free trial' : sub.state === 'trialing' ? `${sub.days_left} day${sub.days_left === 1 ? '' : 's'} left in your free trial`
     : sub.state === 'active' ? (renewing ? `Renews on ${shortDate(sub.current_period_end)}` : `Paid until ${shortDate(sub.current_period_end)}`)
     : sub.state === 'suspended' ? 'Your shop is suspended' : 'Your subscription has ended'
   const pkrPrice = PLANS.basic.prices.month!

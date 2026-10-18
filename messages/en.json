@@ -28,6 +28,8 @@
   "banner.trialEnds": "Your free trial ends in {days} days.",
   "banner.trialEndsOne": "Your free trial ends in 1 day.",
   "banner.seePlans": "See plans",
+  "banner.paymentDue": "Payment for your plan is due by {date}.",
+  "banner.payNow": "Pay now",
 
   "start.title": "Get your shop ready",
   "start.progress": "{done} of {total} done",

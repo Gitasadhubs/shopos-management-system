@@ -29,6 +29,8 @@
   "banner.trialEnds": "आपका मुफ़्त ट्रायल {days} दिनों में समाप्त होगा।",
   "banner.trialEndsOne": "आपका मुफ़्त ट्रायल 1 दिन में समाप्त होगा।",
   "banner.seePlans": "प्लान देखें",
+  "banner.paymentDue": "आपके प्लान का भुगतान {date} तक देय है।",
+  "banner.payNow": "अभी भुगतान करें",
 
   "start.title": "अपनी दुकान तैयार करें",
   "start.progress": "{total} में से {done} पूरे",

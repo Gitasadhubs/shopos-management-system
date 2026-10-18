@@ -35,7 +35,7 @@ export default async function ShopsPage({ searchParams }: { searchParams: Promis
           <tbody>{shops.map((shop) => <tr key={shop.id} className="border-t border-stone-100 hover:bg-stone-50/60">
             <td className="px-5 py-4"><p className="font-semibold">{shop.name}</p><p className="text-xs text-stone-500">Joined {formatDate(shop.created_at)}{shop.phone ? ` · ${shop.phone}` : ''}</p></td>
             <td className="px-5 py-4"><p>{shop.owner_name ?? '—'}</p><p className="text-xs text-stone-500">{shop.owner_email ?? ''}</p></td>
-            <td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${STATE_STYLES[shop.subscription.state]}`}>{shop.subscription.state}</span></td>
+            <td className="px-5 py-4"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${STATE_STYLES[shop.subscription.state]}`}>{shop.subscription.state}</span>{shop.subscription.payment_due && <span className="ml-2 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-900">Payment due</span>}</td>
             <td className="px-5 py-4">{planPrice(shop.subscription)}</td>
             <td className="px-5 py-4 text-stone-600">{formatDate(shop.subscription.current_period_end)}<p className="text-xs text-stone-400">{shop.subscription.state === 'trialing' || shop.subscription.state === 'active' ? `${shop.subscription.days_left} days left` : ''}</p></td>
             <td className="px-5 py-4 tabular-nums">{shop.users}</td>

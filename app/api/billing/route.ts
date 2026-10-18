@@ -2,7 +2,8 @@ import { withBillingOwner } from '@/lib/billing-route'
 import { paddleLink } from '@/lib/local-billing'
 import { getBilling } from '@/lib/local-platform'
 import { jsonResponse } from '@/lib/local-session'
-import { paddleCheckoutConfig } from '@/lib/paddle'
+import { cardCheckoutOpen, paddleCheckoutConfig } from '@/lib/paddle'
+import { PAY_LATER_DAYS } from '@/lib/local-platform'
 import { CARD_PLANS, PLANS } from '@/lib/plans'
 
 export const runtime = 'nodejs'
@@ -32,7 +33,11 @@ export async function GET(request: Request) {
       ...(await getBilling(shop.id)),
       payment_details: paymentDetails(),
       plans: CARD_PLANS.map((id) => PLANS[id]),
+      // Start a card plan now and pay within PAY_LATER_DAYS (POST /api/billing/pay-later).
+      pay_later_days: PAY_LATER_DAYS,
       card: checkout && {
+        // false: the plans show, checkout opens later (SHOPOS_PADDLE_CHECKOUT=soon).
+        open: cardCheckoutOpen(),
         environment: checkout.environment,
         client_token: checkout.client_token,
         // Plan + interval pairs that have a Paddle price on this install (with the 14-day trial, for a

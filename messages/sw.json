@@ -29,6 +29,8 @@
   "banner.trialEnds": "Jaribio lako la bure linaisha baada ya siku {days}.",
   "banner.trialEndsOne": "Jaribio lako la bure linaisha baada ya siku 1.",
   "banner.seePlans": "Tazama mipango",
+  "banner.paymentDue": "Malipo ya mpango wako yanadaiwa kabla ya {date}.",
+  "banner.payNow": "Lipa sasa",
 
   "start.title": "Andaa duka lako",
   "start.progress": "{done} kati ya {total} zimekamilika",
