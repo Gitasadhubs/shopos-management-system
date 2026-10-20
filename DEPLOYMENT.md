@@ -146,6 +146,21 @@ docker compose -p shopos-prod --env-file .env.production start minio app
 Locked out (owner lost their password and email is not working)? Restore is not needed: set up email,
 then use **Forgot password**.
 
+## Separate database server
+
+With MariaDB and file storage on another machine (shopos-infra `db.tf`, or any MariaDB 11.4 and
+S3-compatible storage), set in the env file:
+```
+SHOPOS_DB_HOST=10.42.1.20
+SHOPOS_S3_ENDPOINT=http://10.42.1.20:9000
+SHOPOS_LOCAL_DB=0
+SHOPOS_BACKUP_FILES=0
+```
+`SHOPOS_LOCAL_DB=0` stops running the `db` and `minio` containers here; the next `up` removes them. Their
+volumes stay, so `SHOPOS_LOCAL_DB=1` brings the old copies back. The backup container keeps dumping the
+remote database into `SHOPOS_BACKUP_DIR`. `SHOPOS_LOCAL_BACKUP=0` turns that off too, for throwaway copies
+only (such as a demo reset from a snapshot).
+
 ## Checks
 
 - Health (no sign-in needed): `<address>/api/health` returns `{"ok":true,"storage":"mariadb","files":"ok"}`.

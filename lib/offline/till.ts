@@ -49,7 +49,13 @@ function db() {
 }
 
 // fetch() rejects (TypeError) when there is no connection at all; an HTTP error is a real answer.
-export const isNetworkError = (error: unknown) => error instanceof TypeError || (error instanceof DOMException && error.name === 'AbortError')
+export const isNetworkError = (error: unknown) => error instanceof TypeError || (error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError'))
+// The request reached Cloudflare or nginx but not a working ShopOS (restarting, overloaded, database
+// down): as good as no connection for a sale, which is then kept on the till.
+export const serverUnreachable = (response: Response) => [502, 503, 504].includes(response.status) || (response.status >= 520 && response.status <= 530)
+// How long a sale may take to reach the server before the till keeps it instead. client_id makes a
+// later resend harmless if the first one did arrive.
+export const SALE_TIMEOUT_MS = 20_000
 
 // One transaction per save, so saving products, customers and the shop at the same moment cannot
 // overwrite each other with a stale copy.
@@ -114,7 +120,7 @@ export function syncQueue(shopId: string, post: (body: SaleBody & { offline: tru
       } else if (response.status >= 500 || response.status === 401 || response.status === 429) {
         // The server is struggling or the session ended: keep it for the next try.
         await database.put('queue', { ...sale, attempts: sale.attempts + 1 })
-        return result
+        return { ...result, offline: serverUnreachable(response) }
       } else {
         // The server refused this sale for good (product removed, customer gone…): a person decides.
         const message = (await response.json().catch(() => null))?.error ?? `Refused (${response.status}).`
@@ -127,4 +133,4 @@ export function syncQueue(shopId: string, post: (body: SaleBody & { offline: tru
   return running
 }
 
-const defaultPost = (body: unknown) => fetch('/api/sales', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+const defaultPost = (body: unknown) => fetch('/api/sales', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(SALE_TIMEOUT_MS) })

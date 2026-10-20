@@ -318,3 +318,71 @@ test('an offline sale keeps its time and is recorded even if stock ran short', a
   expect(future.status()).toBe(201)
   expect(Math.abs(Date.parse((await future.json()).data.created_at) - Date.now())).toBeLessThan(60_000)
 })
+
+// Connection checker (lib/connectivity.ts): the till's status comes from /api/health checks, not from
+// the browser's online flag, and a single failed check does not flip it.
+const connection = (page: Page) => page.locator('[data-connection]')
+
+test('one failed connection check does not take the till offline', async ({ page }) => {
+  await page.goto('/pos')
+  await expect(connection(page)).toHaveAttribute('data-connection', 'online')
+  await page.evaluate(() => {
+    const seen: string[] = []
+    Object.assign(window, { seenConnections: seen })
+    const element = document.querySelector('[data-connection]')!
+    new MutationObserver(() => seen.push(element.getAttribute('data-connection') ?? '')).observe(element, { attributes: true })
+  })
+  let failures = 1
+  await page.route('**/api/health*', (route) => (failures-- > 0 ? route.fulfill({ status: 502, body: 'Bad gateway' }) : route.continue()))
+  await connection(page).click()
+  // The failed check is followed by a quick second one, which succeeds.
+  await expect.poll(() => failures, { timeout: 10_000 }).toBeLessThan(0)
+  await expect(connection(page)).toHaveAttribute('data-connection', 'online')
+  expect(await page.evaluate(() => (window as unknown as { seenConnections: string[] }).seenConnections)).not.toContain('server-down')
+  await expect(page.getByText('Offline', { exact: true })).toHaveCount(0)
+})
+
+test('the till recovers from a dropped network by itself and keeps the cart', async ({ page, context, request }) => {
+  const product = await createProduct(request, { name: uniqueName('Checker Tea'), sale_price: 40, stock_quantity: 5 })
+  await openPos(page, product.name)
+  await productCard(page, product.name).click()
+  await expect(cartQuantity(page, product.name)).toHaveText('1')
+
+  await context.setOffline(true)
+  await expect(connection(page)).toHaveAttribute('data-connection', 'no-network')
+  await expect(page.getByText('Offline', { exact: true })).toBeVisible()
+  await expect(page.getByText(/This device has no network/)).toBeVisible()
+
+  await context.setOffline(false)
+  await expect(connection(page)).toHaveAttribute('data-connection', 'online')
+  await expect(page.getByText(/ · Products and sales are saved by the server\./)).toBeVisible()
+  await expect(page.getByText('Offline', { exact: true })).toHaveCount(0)
+  // No reload happened: the sale in progress is still there and can be completed.
+  await expect(cartQuantity(page, product.name)).toHaveText('1')
+  await completeButton(page).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Sale completed' })).toBeVisible()
+  expect((await getProduct(request, product.name))?.stock_quantity).toBe(4)
+})
+
+test('while the server is down (gateway error) sales stay on the till and are sent when it is back', async ({ page, request }) => {
+  const product = await createProduct(request, { name: uniqueName('Gateway Salt'), sale_price: 30, stock_quantity: 5 })
+  await openPos(page, product.name)
+  await expect(connection(page)).toHaveAttribute('data-connection', 'online')
+
+  // Cloudflare answers, the app behind it does not.
+  await page.route('**/api/health*', (route) => route.fulfill({ status: 530, contentType: 'text/html', body: '<html>Origin is unreachable</html>' }))
+  await page.route('**/api/sales', (route) => (route.request().method() === 'POST' ? route.fulfill({ status: 502, contentType: 'text/html', body: '<html>Bad gateway</html>' }) : route.continue()))
+  await productCard(page, product.name).click()
+  await completeButton(page).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Saved on this till' })).toContainText('Rs 30')
+  await expect(connection(page)).toHaveAttribute('data-connection', 'server-down')
+  await expect(page.getByText(/the ShopOS server is not answering/)).toBeVisible()
+  expect((await getProduct(request, product.name))?.stock_quantity).toBe(5)
+
+  await page.unroute('**/api/sales')
+  await page.unroute('**/api/health*')
+  await expect(connection(page)).toHaveAttribute('data-connection', 'online', { timeout: 30_000 })
+  await expect(page.getByText(/Waiting to be sent/)).toHaveCount(0, { timeout: 30_000 })
+  await expect.poll(async () => (await getProduct(request, product.name))?.stock_quantity, { timeout: 15_000 }).toBe(4)
+  expect(await salesFor(request, product.name)).toHaveLength(1)
+})

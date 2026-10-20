@@ -16,7 +16,10 @@ import { playSound, setSoundEnabled, useSoundEnabled } from '@/lib/sounds'
 import { randomId } from '@/lib/utils'
 import { formatDateTime, formatFor, formatMoney, setShopFormat } from '@/lib/format'
 import { applyLanguage, t } from '@/lib/i18n'
-import { discardQueued, isNetworkError, lastCatalog, listQueue, loadCatalog, queueSale, saveCatalog, syncQueue, type QueuedSale } from '@/lib/offline/till'
+import { discardQueued, isNetworkError, lastCatalog, listQueue, loadCatalog, queueSale, SALE_TIMEOUT_MS, saveCatalog, serverUnreachable, syncQueue, type QueuedSale } from '@/lib/offline/till'
+import { reachable, reportFailure, reportSuccess } from '@/lib/connectivity'
+import { useConnectivity } from '@/hooks/use-connectivity'
+import { ConnectionCheck, connectionHint } from '@/components/connection-check'
 
 type Product = {
   id: string
@@ -75,10 +78,11 @@ export default function POSPage() {
   const checkoutRef = useRef<() => void>(() => undefined)
   const [burst, setBurst] = useState(0)
   const sound = useSoundEnabled()
-  // Offline till (lib/offline/till.ts): the shop this device sells for, whether the server is reachable,
-  // and the sales waiting on this device to be sent.
+  // Offline till (lib/offline/till.ts): the shop this device sells for, whether the server is reachable
+  // (the connection checker, lib/connectivity.ts), and the sales waiting on this device to be sent.
   const [shopId, setShopId] = useState<string | null>(null)
-  const [offline, setOffline] = useState(false)
+  const connection = useConnectivity()
+  const offline = connection.offline
   const [queue, setQueue] = useState<QueuedSale[]>([])
   const [syncing, setSyncing] = useState(false)
   // Which lists on screen came straight from the server; only those may replace the device copy.
@@ -87,7 +91,7 @@ export default function POSPage() {
   // No connection: fill the till from the copy on this device, filtered the way the server would.
   async function fillFromDevice() {
     fresh.current = { products: false, customers: false, shop: false }
-    setOffline(true)
+    reportFailure()
     const catalog = shopId ? await loadCatalog(shopId) : await lastCatalog()
     if (!catalog) return false
     const query = search.trim().toLowerCase()
@@ -112,10 +116,9 @@ export default function POSPage() {
         if (!active) return
         // Offline, an answer can still come from the service worker's cache; the device copy is newer
         // (it already counts the sales waiting on this till), so it wins.
-        if (!navigator.onLine && await fillRef.current()) return
-        fresh.current.products = search === '' && navigator.onLine
+        if (!reachable() && await fillRef.current()) return
+        fresh.current.products = search === '' && reachable()
         setProducts(body.data ?? [])
-        setOffline(!navigator.onLine)
       })
       .catch(async (loadError) => {
         if (!active) return
@@ -143,11 +146,11 @@ export default function POSPage() {
   // Customers (for khata) and the shop profile (for receipts) are extras: the till works without them.
   useEffect(() => {
     let active = true
-    fetch('/api/customers', { cache: 'no-store' }).then(async (response) => { if (!response.ok || !active) return; fresh.current.customers = navigator.onLine; setCustomers((await response.json()).data ?? []) }).catch(() => undefined)
+    fetch('/api/customers', { cache: 'no-store' }).then(async (response) => { if (!response.ok || !active) return; fresh.current.customers = reachable(); setCustomers((await response.json()).data ?? []) }).catch(() => undefined)
     fetch('/api/settings', { cache: 'no-store' }).then(async (response) => {
       if (!response.ok || !active) return
       const data = (await response.json()).data
-      fresh.current.shop = navigator.onLine
+      fresh.current.shop = reachable()
       applyShop(data)
       setShop(data)
       if (data?.id) setShopId(data.id)
@@ -167,8 +170,8 @@ export default function POSPage() {
     try {
       const result = await syncQueue(shopId)
       if (!result.offline && (result.synced || result.failed)) setRefreshKey((value) => value + 1)
-      if (result.synced) setOffline(false)
-      if (result.offline) setOffline(true)
+      if (result.synced) reportSuccess()
+      if (result.offline) reportFailure()
     } catch { /* tried again on the next tick */ }
     finally {
       setQueue(await listQueue(shopId).catch(() => []))
@@ -180,13 +183,20 @@ export default function POSPage() {
   useEffect(() => {
     if (!shopId) return
     void syncRef.current()
-    const goOnline = () => { setRefreshKey((value) => value + 1); void syncRef.current() }
-    const goOffline = () => setOffline(true)
-    window.addEventListener('online', goOnline)
-    window.addEventListener('offline', goOffline)
     const timer = window.setInterval(() => void syncRef.current(), 20_000)
-    return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); window.clearInterval(timer) }
+    return () => window.clearInterval(timer)
   }, [shopId])
+  // Back online after being offline: reload from the server and send what is waiting, without
+  // reloading the page, so the cart stays as it is.
+  const wasOffline = useRef(false)
+  useEffect(() => {
+    if (offline) { wasOffline.current = true; return }
+    if (connection.online && wasOffline.current) {
+      wasOffline.current = false
+      setRefreshKey((value) => value + 1)
+      void syncRef.current()
+    }
+  }, [offline, connection.online])
   const waiting = queue.filter((sale) => sale.status === 'pending').length
 
   const categories = useMemo(() => [...new Set(products.map((product) => product.category).filter((value): value is string => Boolean(value)))].sort(), [products])
@@ -280,7 +290,10 @@ export default function POSPage() {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(sale),
+        signal: AbortSignal.timeout(SALE_TIMEOUT_MS),
       })
+      if (serverUnreachable(response)) throw new TypeError(`Server unreachable (${response.status})`)
+      reportSuccess()
       const body = await response.json()
       if (!response.ok) throw new Error(body.error ?? t('pos.errFailed'))
       setSuccess(t('pos.completed', { total: money(Number(body.data.total)) }))
@@ -296,7 +309,7 @@ export default function POSPage() {
           await queueSale({ client_id: sale.client_id, shop_id: shopId, sold_at: new Date().toISOString(), body: sale, summary: { total, items: cart.map(({ product, quantity }) => ({ name: product.name, quantity })), customer_name: customer?.name ?? null } })
           const sold = new Map(cart.map(({ product, quantity }) => [product.id, quantity]))
           setProducts((items) => items.map((product) => (sold.has(product.id) ? { ...product, stock_quantity: Math.max(0, product.stock_quantity - sold.get(product.id)!) } : product)))
-          setOffline(true)
+          reportFailure()
           setSuccess(t('pos.savedOfflineNote', { total: money(total) }))
           setLastSale(null)
           playSound('sale')
@@ -341,8 +354,9 @@ export default function POSPage() {
     <main className="min-h-screen bg-stone-50 p-4 sm:p-8">
       <div className="mx-auto max-w-7xl">
         <div className="no-print mb-6 flex flex-wrap items-center justify-between gap-4 shopos-rise">
-          <div><Link href="/dashboard" className="mb-3 inline-flex items-center gap-2 text-sm font-medium text-emerald-700"><ArrowLeft className="size-4" />{t('pos.back')}</Link><h1 className="text-3xl font-bold text-stone-900">{t('pos.title')}</h1><p className="mt-1 text-sm text-muted-foreground">{shop?.name ? `${shop.name} · ` : ''}{t(offline ? 'pos.offline' : 'pos.online')}</p></div>
-          <div className="flex items-center gap-2">
+          <div><Link href="/dashboard" className="mb-3 inline-flex items-center gap-2 text-sm font-medium text-emerald-700"><ArrowLeft className="size-4" />{t('pos.back')}</Link><h1 className="text-3xl font-bold text-stone-900">{t('pos.title')}</h1><p className="mt-1 text-sm text-muted-foreground">{shop?.name ? `${shop.name} · ` : ''}{offline ? connectionHint(connection.status) : t('pos.online')}</p></div>
+          <div className="flex flex-wrap items-center gap-2">
+            <ConnectionCheck />
             {(offline || waiting > 0) && <span role="status" className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${offline ? 'bg-amber-100 text-amber-900' : 'bg-sky-100 text-sky-900'}`}>{offline ? <CloudOff className="size-3.5" /> : <RefreshCw className={`size-3.5 ${syncing ? 'animate-spin' : ''}`} />}{t(offline ? 'pos.offlineBadge' : 'pos.sending')}{waiting > 0 ? ` · ${t('pos.waiting', { count: waiting })}` : ''}</span>}
             <Badge variant="outline" className="bg-white">{products.length === 1 ? t('pos.oneProduct') : t('pos.products', { count: products.length })}</Badge>
             <button type="button" aria-label={t(sound ? 'pos.muteSounds' : 'pos.soundsOn')} title={t(sound ? 'pos.muteSounds' : 'pos.soundsOn')} onClick={() => setSoundEnabled(!sound)} className="flex size-10 items-center justify-center rounded-lg bg-white text-stone-500 ring-1 ring-stone-200 hover:text-stone-900">{sound ? <Volume2 className="size-5" /> : <VolumeX className="size-5" />}</button>

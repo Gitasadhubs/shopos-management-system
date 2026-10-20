@@ -2,20 +2,24 @@
 
 import { RefreshCw, ShoppingCart } from "lucide-react"
 import { OfflineIllustration } from "@/components/illustrations"
+import { ConnectionCheck, connectionHint } from "@/components/connection-check"
+import { useConnectivity } from "@/hooks/use-connectivity"
 import Link from "next/link"
-import { useEffect, useState } from "react"
+import { useEffect, useRef } from "react"
 
 export default function OfflinePage() {
-  const [isOnline, setIsOnline] = useState(false)
+  const connection = useConnectivity()
 
+  // The service worker shows this page at the address that could not load, so once the server answers
+  // again a reload opens that page. Only a direct visit to /offline goes to the dashboard. It waits to see
+  // the connection down first, so a page that fails for another reason cannot reload in a loop.
+  const sawOffline = useRef(false)
   useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true)
-      window.location.assign("/dashboard")
-    }
-    window.addEventListener("online", handleOnline)
-    return () => window.removeEventListener("online", handleOnline)
-  }, [])
+    if (connection.offline) sawOffline.current = true
+    if (!connection.online || !sawOffline.current) return
+    if (window.location.pathname === "/offline") window.location.assign("/dashboard")
+    else window.location.reload()
+  }, [connection.online, connection.offline])
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background px-6 py-12">
@@ -27,7 +31,9 @@ export default function OfflinePage() {
           <p className="text-base leading-7 text-muted-foreground">
             This page needs a connection. The till still works: open the POS to keep selling. Sales are kept on this device and sent when the connection is back.
           </p>
+          {connection.offline && <p className="text-sm text-muted-foreground">{connectionHint(connection.status)}</p>}
         </div>
+        <ConnectionCheck />
         <div className="flex w-full flex-col gap-3 sm:flex-row">
           <Link className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90" href="/pos">
             <ShoppingCart aria-hidden="true" className="size-4" />
@@ -38,7 +44,6 @@ export default function OfflinePage() {
             Try again
           </button>
         </div>
-        {isOnline && <p className="text-sm text-primary">Connection restored. Taking you back to the dashboard...</p>}
       </div>
     </main>
   )

@@ -13,8 +13,11 @@ x-db-credentials: &db-credentials
   SHOPOS_DB_PASSWORD: ${SHOPOS_DB_PASSWORD:?Set SHOPOS_DB_PASSWORD in the env file}
 
 services:
+  # SHOPOS_LOCAL_DB=0 (with SHOPOS_DB_HOST and SHOPOS_S3_ENDPOINT on a separate server) runs neither db nor
+  # minio here; their volumes are kept, so setting it back to 1 brings the old copies up again.
   db:
     image: mariadb:11.4
+    scale: ${SHOPOS_LOCAL_DB:-1}
     restart: unless-stopped
     environment:
       MARIADB_ROOT_PASSWORD: ${SHOPOS_DB_ROOT_PASSWORD:?Set SHOPOS_DB_ROOT_PASSWORD in the env file}
@@ -43,6 +46,7 @@ services:
   # pgsty/minio is the community build of MinIO (upstream stopped publishing images).
   minio:
     image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+    scale: ${SHOPOS_LOCAL_DB:-1}
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -67,11 +71,14 @@ services:
       dockerfile: Dockerfile
     image: shopos:${SHOPOS_VERSION:-local}
     restart: unless-stopped
+    # required: false, so the app also starts when db and minio are not run here (SHOPOS_LOCAL_DB=0).
     depends_on:
       db:
         condition: service_healthy
+        required: false
       minio:
         condition: service_healthy
+        required: false
     environment:
       <<: *db-credentials
       NODE_ENV: production
@@ -79,7 +86,7 @@ services:
       PORT: 3000
       SHOPOS_STORAGE: mariadb
       # A separate database server (shopos-infra db.tf, or any MariaDB 11.4): set SHOPOS_DB_HOST in the env
-      # file. The db container then stays idle as a fallback.
+      # file, and SHOPOS_LOCAL_DB=0 so the db and minio containers are not run here.
       SHOPOS_DB_HOST: ${SHOPOS_DB_HOST:-db}
       SHOPOS_DB_PORT: ${SHOPOS_DB_PORT:-3306}
       # File storage. Point these at AWS S3 or Cloudflare R2 instead to move files off this machine.
@@ -222,12 +229,15 @@ services:
     command: ["--database", "/data/mailpit.db"]
     security_opt: ["no-new-privileges:true"]
 
+  # SHOPOS_LOCAL_BACKUP=0 turns it off, e.g. for a demo that is reset from a snapshot anyway.
   backup:
     image: mariadb:11.4
+    scale: ${SHOPOS_LOCAL_BACKUP:-1}
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+        required: false
     entrypoint: ["/bin/sh", "/usr/local/bin/db-backup.sh"]
     environment:
       <<: *db-credentials
